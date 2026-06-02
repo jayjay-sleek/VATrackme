@@ -29,6 +29,8 @@ jobs:
         env:
           PFX_BASE64: ${{ secrets.PFX_BASE64 }}
         run: |
+          # ensure build directory exists (PowerShell on windows-latest)
+          New-Item -ItemType Directory -Path build -Force | Out-Null
           node -e "require('fs').writeFileSync('build/codesign.pfx', Buffer.from(process.env.PFX_BASE64,'base64'))"
 
       - name: Package & Sign (Windows)
