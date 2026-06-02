@@ -1,0 +1,14 @@
+node_modules/
+dist/
+release/
+installer/
+installer-fixed/
+.gitignore
+installer-final2/
+.electron-user-data/
+*.tsbuildinfo
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db

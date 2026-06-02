@@ -1,0 +1,323 @@
+:root {
+  color: #172033;
+  background: #f6f8fb;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  font-size: 13px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  border-radius: 8px;
+  background: #2264e5;
+  color: #ffffff;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button.secondary {
+  background: #e8eef8;
+  color: #244064;
+}
+
+button.danger {
+  background: #d92d20;
+}
+
+input,
+select {
+  width: 100%;
+  border: 1px solid #d6dfe9;
+  border-radius: 6px;
+  margin-top: 6px;
+  padding: 8px;
+  font-size: 12px;
+}
+
+label {
+  color: #506078;
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.app-shell {
+  margin: 0;
+  max-width: none;
+  width: 100%;
+  padding: 8px;
+}
+
+.hero {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.hero h1 {
+  font-size: 16px;
+  line-height: 1.1;
+  margin: 0;
+  max-width: 600px;
+}
+
+.eyebrow {
+  color: #2264e5;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.muted {
+  color: #6d7b91;
+  margin: 0;
+}
+
+.connected {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: #2b7a2b;
+}
+
+.status-dot {
+  width: 12px;
+  height: 12px;
+  background: #2ecc71;
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 0 4px rgba(46, 204, 113, 0.08);
+}
+
+.card {
+  background: #ffffff;
+  border: 1px solid #e6edf6;
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(31, 45, 70, 0.06);
+  padding: 12px;
+}
+
+.card h2 {
+  margin: 0 0 18px;
+}
+
+.login-card {
+  display: grid;
+  gap: 10px;
+  max-width: 380px;
+}
+
+.login-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 40px);
+}
+
+.login-card h2 {
+  margin: 0 0 6px 0;
+  font-size: 18px;
+}
+
+.login-checkbox {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+  color: #3b4a63;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.login-card button {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.dashboard {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1.4fr 0.8fr;
+}
+
+.profile-card {
+  align-items: center;
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: space-between;
+}
+
+.profile-card h2 {
+  margin: 6px 0;
+}
+
+.metric {
+  background: #f8fbff;
+  border-radius: 8px;
+  min-width: 100px;
+  padding: 8px;
+  text-align: right;
+}
+
+.metric span {
+  color: #6d7b91;
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.metric strong {
+  display: block;
+  font-size: 16px;
+  margin-top: 4px;
+}
+
+.tracker-card,
+.activity-card {
+  display: grid;
+  gap: 18px;
+}
+
+.field-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.add-task-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.add-task-row input {
+  flex: 1;
+}
+
+.add-task-row button {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.status {
+  color: #506078;
+  font-weight: 700;
+  margin: 0;
+}
+
+dl {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+dl div {
+  align-items: center;
+  border-bottom: 1px solid #edf1f6;
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: 8px;
+}
+
+dt {
+  color: #6d7b91;
+  font-weight: 700;
+}
+
+dd {
+  font-weight: 800;
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .dashboard,
+  .field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero,
+  .profile-card {
+    display: grid;
+  }
+}
+
+.unrelated-popup {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 320px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(16,24,40,0.12);
+  padding: 12px;
+  z-index: 9999;
+  border: 1px solid #e6edf6;
+}
+.unrelated-header {
+  font-weight: 800;
+  color: #b21b1b;
+  margin-bottom: 8px;
+}
+.unrelated-body {
+  color: #344054;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.unrelated-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.unrelated-actions .secondary {
+  background: #eef2ff;
+  color: #3730a3;
+  padding: 8px 12px;
+  border-radius: 8px;
+}

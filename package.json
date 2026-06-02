@@ -1,0 +1,60 @@
+{
+  "name": "va-worker-time-tracker",
+  "version": "0.1.0",
+  "description": "Cross-platform worker time tracker desktop app for VA API.",
+  "private": true,
+  "main": "electron/main.cjs",
+  "author": "VA",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && electron .\"",
+    "build": "tsc -b && vite build",
+    "dist": "npm run build && electron-builder",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "png-to-ico": "^3.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sharp": "^0.34.5"
+  },
+  "optionalDependencies": {
+    "iohook": "^0.9.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.29",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.2.1",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21",
+    "wait-on": "^8.0.5"
+  },
+  "build": {
+    "appId": "com.va.worker.timetracker",
+    "productName": "VA Trackme",
+    "icon": "build/icon.ico",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "installer-final3"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false,
+      "certificateFile": "build/codesign.pfx",
+      "certificatePassword": "change_me_123!"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity"
+    }
+  }
+}
