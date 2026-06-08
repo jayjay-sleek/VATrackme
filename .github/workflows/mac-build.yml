@@ -24,8 +24,26 @@ jobs:
       - name: Build renderer
         run: npm run build
 
-      - name: Package macOS DMG
-        run: npx electron-builder --mac --x64 --publish never --config.directories.output=release
+      - name: Write macOS signing certificate
+        if: ${{ secrets.MAC_CERT_BASE64 != '' }}
+        env:
+          MAC_CERT_BASE64: ${{ secrets.MAC_CERT_BASE64 }}
+        run: |
+          echo "$MAC_CERT_BASE64" | base64 --decode > build/mac-cert.p12
+
+      - name: Package macOS DMG (unsigned)
+        if: ${{ secrets.MAC_CERT_BASE64 == '' }}
+        run: npx electron-builder --mac --x64 --arm64 --publish never --config.directories.output=release
+
+      - name: Package macOS DMG (signed & notarized)
+        if: ${{ secrets.MAC_CERT_BASE64 != '' }}
+        env:
+          CSC_LINK: ${{ github.workspace }}/build/mac-cert.p12
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --mac --x64 --arm64 --publish never --config.directories.output=release
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
