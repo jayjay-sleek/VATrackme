@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
   captureScreen: () => ipcRenderer.invoke('desktop:capture-screen'),
   getActiveWindow: () => ipcRenderer.invoke('desktop:get-active-window'),
   apiRequest: (request) => ipcRenderer.invoke('api:request', request),
+  pingApi: () => ipcRenderer.invoke('desktop:ping-api'),
   log: (payload) => {
     try {
       ipcRenderer.send('renderer-log', payload);

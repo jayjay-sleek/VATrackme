@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getTrackerData, login, postHeartbeat, uploadScreenshot, addTask, updateTaskStatus, API_BASE_URL } from './api';
-import type { Employer, Project, Task, TrackerData, TrackingSelection } from './types';
+import { getTrackerData, login, postHeartbeat, uploadScreenshot, addTask, updateTaskStatus, API_BASE_URL, pingApi } from './api';
+import type { ConnectionStatus, Employer, Project, Task, TrackerData, TrackingSelection } from './types';
 
 const savedTokenKey = 'va-tracker-auth-token';
 const defaultHeartbeatSeconds = 60;
 const defaultScreenshotSeconds = 600;
+const connectionCheckMs = 20000;
 
 function App() {
   const [userName, setUserName] = useState('');
@@ -45,6 +46,9 @@ function App() {
   const activityRef = useRef(activity);
   const [isAppFocused, setIsAppFocused] = useState(true);
   const fallbackTimer = useRef<number | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('checking');
+  const needsDataRefreshRef = useRef(false);
+  const refreshInFlightRef = useRef(false);
 
   const employers = useMemo(() => Object.values(data?.employers ?? {}), [data]);
   const selectedEmployer = employers.find((employer) => String(employer.emp_id) === selectedEmployerId);
@@ -94,6 +98,57 @@ function App() {
     if (token) {
       void refreshData(token);
     }
+  }, [token]);
+
+  // Monitor internet/API connection and auto-reload data when back online
+  useEffect(() => {
+    let cancelled = false;
+
+    async function checkConnection() {
+      if (cancelled) return;
+      const browserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+      if (!browserOnline) {
+        setConnectionStatus('offline');
+        if (token) needsDataRefreshRef.current = true;
+        return;
+      }
+
+      setConnectionStatus((current) => (current === 'offline' ? 'checking' : current));
+      const ok = await pingApi();
+      if (cancelled) return;
+
+      if (ok) {
+        setConnectionStatus('connected');
+        if (token && needsDataRefreshRef.current && !refreshInFlightRef.current) {
+          void refreshData(token, { silent: true });
+        }
+      } else {
+        setConnectionStatus('offline');
+        if (token) needsDataRefreshRef.current = true;
+      }
+    }
+
+    void checkConnection();
+    const intervalId = window.setInterval(checkConnection, connectionCheckMs);
+
+    const onOnline = () => {
+      setConnectionStatus('checking');
+      void checkConnection();
+    };
+    const onOffline = () => {
+      setConnectionStatus('offline');
+      if (token) needsDataRefreshRef.current = true;
+    };
+
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
   }, [token]);
 
   useEffect(() => {
@@ -196,39 +251,58 @@ function App() {
     };
   }, []);
 
-  async function refreshData(authToken = token) {
-    setStatus('Loading projects and tasks...');
-    const nextData = await getTrackerData(authToken);
+  async function refreshData(authToken = token, options?: { silent?: boolean }) {
+    if (!authToken || refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    if (!options?.silent) setStatus('Loading projects and tasks...');
 
-    if (nextData.error_va_code) {
-      // if auth invalid or session taken over, sign out automatically
-      const msg = (nextData.error_message || '').toLowerCase();
-      if (nextData.error_va_code === 401 || msg.includes('another device') || msg.includes('already logged') || msg.includes('invalid token') || msg.includes('session')) {
-        // automatic logout
-        signOut();
-        setStatus(nextData.error_message ?? 'Signed out due to session change.');
+    try {
+      const nextData = await getTrackerData(authToken);
+
+      if ((nextData as any).network_error || nextData.error_va_code === -1) {
+        setConnectionStatus('offline');
+        needsDataRefreshRef.current = true;
+        if (!options?.silent) setStatus('No internet connection. Retrying automatically...');
         return;
       }
-      setStatus(nextData.error_message ?? 'Unable to load tracker data.');
-      return;
-    }
 
-    setData(nextData);
-    setStatus('Projects and tasks loaded.');
+      if (nextData.error_va_code) {
+        const msg = (nextData.error_message || '').toLowerCase();
+        if (nextData.error_va_code === 401 || msg.includes('another device') || msg.includes('already logged') || msg.includes('invalid token') || msg.includes('session')) {
+          signOut();
+          setStatus(nextData.error_message ?? 'Signed out due to session change.');
+          return;
+        }
+        setConnectionStatus('connected');
+        setStatus(nextData.error_message ?? 'Unable to load tracker data.');
+        return;
+      }
 
-    const firstEmployer = Object.values(nextData.employers ?? {})[0];
-    const firstProject = firstEmployer ? Object.values(firstEmployer.projects ?? {})[0] : undefined;
-    const firstTask = firstProject ? Object.values((firstProject as any).tasks ?? {})[0] : undefined;
+      setConnectionStatus('connected');
+      needsDataRefreshRef.current = false;
+      setData(nextData);
+      if (!options?.silent) setStatus('Projects and tasks loaded.');
 
-    // preserve existing selections; only set defaults when empty
-    if (!selectedEmployerId && firstEmployer) {
-      setSelectedEmployerId(String(firstEmployer.emp_id));
-    }
-    if (!selectedProjectId && firstProject) {
-      setSelectedProjectId(String((firstProject as any).id));
-    }
-    if (!selectedTaskId && firstTask) {
-      setSelectedTaskId(String((firstTask as any).id));
+      const firstEmployer = Object.values(nextData.employers ?? {})[0];
+      const firstProject = firstEmployer ? Object.values(firstEmployer.projects ?? {})[0] : undefined;
+      const firstTask = firstProject ? Object.values((firstProject as any).tasks ?? {})[0] : undefined;
+
+      if (!selectedEmployerId && firstEmployer) {
+        setSelectedEmployerId(String(firstEmployer.emp_id));
+      }
+      if (!selectedProjectId && firstProject) {
+        setSelectedProjectId(String((firstProject as any).id));
+      }
+      if (!selectedTaskId && firstTask) {
+        setSelectedTaskId(String((firstTask as any).id));
+      }
+    } catch (e) {
+      setConnectionStatus('offline');
+      needsDataRefreshRef.current = true;
+      if (!options?.silent) setStatus('No internet connection. Retrying automatically...');
+      try { window.desktopApi.log({ level: 'error', message: 'refreshData failed: ' + String(e) }); } catch (_) {}
+    } finally {
+      refreshInFlightRef.current = false;
     }
   }
 
@@ -236,11 +310,25 @@ function App() {
     event.preventDefault();
     setStatus('Signing in...');
 
+    const browserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+    if (!browserOnline || !(await pingApi())) {
+      setConnectionStatus('offline');
+      setStatus('No internet connection. Retrying automatically...');
+      return;
+    }
+
     const response = await login(userName, password);
     if ('error_message' in response) {
+      if ((response as any).network_error) {
+        setConnectionStatus('offline');
+        setStatus('No internet connection. Retrying automatically...');
+        return;
+      }
       setStatus(response.error_message);
       return;
     }
+
+    setConnectionStatus('connected');
 
     if (autoLogin) {
       localStorage.setItem(savedTokenKey, response.user_auth_key);
@@ -597,8 +685,9 @@ function App() {
         <div>
           <p className="eyebrow">VA Trackme</p>
           <h1>Track task time from your desktop.</h1>
-          <p className="muted connected">
-            <span className="status-dot" /> Connected
+          <p className={`muted connection-status ${connectionStatus}`}>
+            <span className={`status-dot ${connectionStatus}`} />
+            {connectionStatus === 'connected' ? 'Connected' : connectionStatus === 'checking' ? 'Checking connection...' : 'Offline — retrying automatically'}
           </p>
         </div>
         {token && (

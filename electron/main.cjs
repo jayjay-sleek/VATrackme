@@ -292,6 +292,19 @@ Write-Output (ConvertTo-Json $out -Compress);
   return fallback;
 });
 
+ipcMain.handle('desktop:ping-api', async () => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(API_BASE_URL, { method: 'GET', redirect: 'follow', signal: controller.signal });
+    clearTimeout(timeout);
+    return { ok: true, status: response.status };
+  } catch (e) {
+    clearTimeout(timeout);
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+});
+
 ipcMain.handle('api:request', async (_event, request) => {
   const url = new URL(request.path.replace(/^\/+/, ''), API_BASE_URL);
 
@@ -299,9 +312,13 @@ ipcMain.handle('api:request', async (_event, request) => {
     url.searchParams.set(key, String(value));
   }
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+
   const options = {
     method: request.method ?? 'GET',
     redirect: 'follow',
+    signal: controller.signal,
   };
 
   if (request.bodyType === 'form') {
@@ -324,15 +341,25 @@ ipcMain.handle('api:request', async (_event, request) => {
     options.body = form;
   }
 
-  const response = await fetch(url, options);
-  const text = await response.text();
-
   try {
-    return JSON.parse(text);
-  } catch (_error) {
+    const response = await fetch(url, options);
+    clearTimeout(timeout);
+    const text = await response.text();
+
+    try {
+      return JSON.parse(text);
+    } catch (_error) {
+      return {
+        error_va_code: response.ok ? 0 : response.status,
+        error_message: text || response.statusText,
+      };
+    }
+  } catch (e) {
+    clearTimeout(timeout);
     return {
-      error_va_code: response.ok ? 0 : response.status,
-      error_message: text || response.statusText,
+      error_va_code: -1,
+      error_message: 'Unable to reach server. Check your internet connection.',
+      network_error: true,
     };
   }
 });

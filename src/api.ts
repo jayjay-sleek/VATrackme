@@ -27,6 +27,19 @@ export async function login(userName: string, password: string): Promise<LoginRe
   });
 }
 
+export async function pingApi(): Promise<boolean> {
+  try {
+    if (window.desktopApi.pingApi) {
+      const result = await window.desktopApi.pingApi();
+      return Boolean(result.ok);
+    }
+    const result = await window.desktopApi.apiRequest<{ network_error?: boolean }>({ path: 'data/' });
+    return !result.network_error;
+  } catch {
+    return false;
+  }
+}
+
 export async function getTrackerData(authtoken: string): Promise<TrackerData> {
   return window.desktopApi.apiRequest<TrackerData>({
     path: 'data/',

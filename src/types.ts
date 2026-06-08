@@ -87,6 +87,9 @@ declare global {
       log: (payload: { level?: string; message: string }) => void;
       onGlobalInput: (cb: (payload: { type: string }) => void) => void;
       openExternal?: (url: string) => Promise<any>;
+      pingApi?: () => Promise<{ ok: boolean; status?: number; error?: string }>;
     };
   }
 }
+
+export type ConnectionStatus = 'connected' | 'offline' | 'checking';

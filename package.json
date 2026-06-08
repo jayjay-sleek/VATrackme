@@ -12,6 +12,8 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "libsodium-wrappers": "^0.8.4",
+    "node-fetch": "^2.7.0",
     "png-to-ico": "^3.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -48,12 +50,11 @@
     "win": {
       "target": "nsis",
       "icon": "build/icon.ico",
-      "signAndEditExecutable": false,
-      "certificateFile": "build/codesign.pfx",
-      "certificatePassword": "change_me_123!"
+      "signAndEditExecutable": false
     },
     "mac": {
       "target": "dmg",
+      "icon": "assets/icon-clock-circle.png",
       "category": "public.app-category.productivity"
     }
   }
