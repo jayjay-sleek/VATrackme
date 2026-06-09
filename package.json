@@ -12,6 +12,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "active-win": "^8.2.1",
     "libsodium-wrappers": "^0.8.4",
     "node-fetch": "^2.7.0",
     "png-to-ico": "^3.0.1",
@@ -43,6 +44,9 @@
       "assets/**/*",
       "package.json"
     ],
+    "asarUnpack": [
+      "node_modules/active-win/**/*"
+    ],
     "directories": {
       "buildResources": "build",
       "output": "installer-final3"
@@ -67,7 +71,10 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "VA Trackme needs permission to detect the active window for time tracking."
+      }
     }
   }
 }

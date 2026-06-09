@@ -35,6 +35,7 @@ export type Employer = {
   company_time: string;
   worker_site_visit?: number;
   worker_app_process?: number;
+  unrelated_keywords?: string | string[];
   projects?: Record<string, Project>;
 };
 

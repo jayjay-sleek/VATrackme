@@ -47,6 +47,32 @@ export async function getTrackerData(authtoken: string): Promise<TrackerData> {
   });
 }
 
+type UnrelatedDetectionInput = {
+  authtoken: string;
+  trackerId?: number;
+  selection: TrackingSelection;
+  keywords: string[];
+  activeWindow: ActiveWindowInfo;
+  keystroke?: number;
+  mouseclick?: number;
+  mousemove?: number;
+};
+
+export async function postUnrelatedDetection(input: UnrelatedDetectionInput) {
+  return postHeartbeat({
+    authtoken: input.authtoken,
+    trackerId: input.trackerId,
+    selection: input.selection,
+    timeInOut: 1,
+    idleStatus: 0,
+    remark: `UNRELATED:${input.keywords.join(',')}`,
+    keystroke: input.keystroke ?? 0,
+    mouseclick: input.mouseclick ?? 0,
+    mousemove: input.mousemove ?? 0,
+    activeWindow: input.activeWindow,
+  });
+}
+
 export async function postHeartbeat(input: HeartbeatInput) {
   const trackerId = input.trackerId ?? 0;
 

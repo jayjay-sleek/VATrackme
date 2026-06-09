@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getTrackerData, login, postHeartbeat, uploadScreenshot, addTask, updateTaskStatus, API_BASE_URL, pingApi } from './api';
-import type { ConnectionStatus, Employer, Project, Task, TrackerData, TrackingSelection } from './types';
+import { getTrackerData, login, postHeartbeat, postUnrelatedDetection, uploadScreenshot, addTask, updateTaskStatus, API_BASE_URL, pingApi } from './api';
+import { buildUnrelatedReportKey, detectUnrelatedKeywords, formatUnrelatedRemark, parseEmployerKeywords } from './detection';
+import type { ActiveWindowInfo, ConnectionStatus, Employer, Project, Task, TrackerData, TrackingSelection } from './types';
 
 const savedTokenKey = 'va-tracker-auth-token';
 const defaultHeartbeatSeconds = 60;
 const defaultScreenshotSeconds = 600;
+const defaultDetectionSeconds = 10;
 const connectionCheckMs = 20000;
 
 function App() {
@@ -42,6 +44,9 @@ function App() {
   const [lastCaptureAt, setLastCaptureAt] = useState<number | null>(null);
   const heartbeatTimer = useRef<number | null>(null);
   const screenshotTimer = useRef<number | null>(null);
+  const detectionTimer = useRef<number | null>(null);
+  const trackingSelectionRef = useRef<TrackingSelection | null>(null);
+  const lastSentUnrelatedRef = useRef('');
   const trackerIdRef = useRef<number | undefined>();
   const activityRef = useRef(activity);
   const [isAppFocused, setIsAppFocused] = useState(true);
@@ -79,20 +84,10 @@ function App() {
     ? { employer: selectedEmployer, project: selectedProject, task: selectedTask }
     : null;
 
-  const defaultUnrelated = [
-    'facebook', 'twitter', 'instagram', 'tiktok', 'youtube', 'pinterest',
-    'reddit', 'snapchat', 'steam', 'epic games', 'league of legends', 'fortnite', 'roblox',
-    'discord', 'netflix', 'hulu', 'twitch'
-  ];
-  const employerKeywords = (() => {
-    const val = selectedEmployer && (selectedEmployer as any).unrelated_keywords;
-    if (!val) return defaultUnrelated;
-    if (Array.isArray(val)) return val;
-    if (typeof val === 'string') {
-      return val.split(',').map((s) => s.trim()).filter(Boolean);
-    }
-    return defaultUnrelated;
-  })();
+  const employerKeywords = useMemo(
+    () => parseEmployerKeywords(selectedEmployer),
+    [selectedEmployer],
+  );
 
   useEffect(() => {
     if (token) {
@@ -283,15 +278,22 @@ function App() {
       setData(nextData);
       if (!options?.silent) setStatus('Projects and tasks loaded.');
 
-      const firstEmployer = Object.values(nextData.employers ?? {})[0];
-      const firstProject = firstEmployer ? Object.values(firstEmployer.projects ?? {})[0] : undefined;
-      const firstTask = firstProject ? Object.values((firstProject as any).tasks ?? {})[0] : undefined;
+      const employerList = Object.values(nextData.employers ?? {});
+      const firstEmployer = employerList[0];
+      const employerForSelection = selectedEmployerId
+        ? employerList.find((employer) => String(employer.emp_id) === selectedEmployerId) ?? firstEmployer
+        : firstEmployer;
+      const employerProjects = employerForSelection
+        ? Object.values(employerForSelection.projects ?? {})
+        : [];
+      const soleProject = employerProjects.length === 1 ? employerProjects[0] : undefined;
+      const firstTask = soleProject ? Object.values((soleProject as any).tasks ?? {})[0] : undefined;
 
       if (!selectedEmployerId && firstEmployer) {
         setSelectedEmployerId(String(firstEmployer.emp_id));
       }
-      if (!selectedProjectId && firstProject) {
-        setSelectedProjectId(String((firstProject as any).id));
+      if (!selectedProjectId && soleProject) {
+        setSelectedProjectId(String((soleProject as any).id));
       }
       if (!selectedTaskId && firstTask) {
         setSelectedTaskId(String((firstTask as any).id));
@@ -403,6 +405,7 @@ function App() {
       task: tasks.find((t) => String(t.id) === selectedTaskId)!,
     };
 
+    trackingSelectionRef.current = currentSelection;
     setIsTracking(true);
     setStatus(`Tracking: ${currentSelection.task.title}`);
     const result = await sendHeartbeat(currentSelection, 1);
@@ -423,15 +426,140 @@ function App() {
     }, screenshotSeconds * 1000);
   }
 
+  useEffect(() => {
+    if (!isTracking || !token || !trackingSelectionRef.current) return;
+
+    const currentSelection = trackingSelectionRef.current;
+    const tick = () => { void checkAndReportUnrelated(currentSelection); };
+
+    tick();
+    const timer = window.setInterval(tick, defaultDetectionSeconds * 1000);
+    detectionTimer.current = timer;
+
+    return () => {
+      window.clearInterval(timer);
+      detectionTimer.current = null;
+    };
+  }, [isTracking, token, employerKeywords, ignoredKeywords, snoozes]);
+
   async function stopTracking() {
     if (selection) {
       await sendHeartbeat(selection, 0);
     }
 
     stopTimers();
+    trackingSelectionRef.current = null;
     setIsTracking(false);
     updateTrackerId(undefined);
     setStatus('Tracking stopped.');
+  }
+
+  async function reportUnrelatedWithScreenshot(
+    currentSelection: TrackingSelection,
+    unrelatedMatches: string[],
+    activeWindow: ActiveWindowInfo,
+  ) {
+    if (!token || !trackerIdRef.current) return;
+
+    const activity = activityRef.current;
+
+    try {
+      const capture = await window.desktopApi.captureScreen();
+      if (!capture) {
+        try { window.desktopApi.log({ level: 'error', message: 'Failed to capture screenshot for unrelated activity' }); } catch (_) {}
+        setStatus('Unrelated activity detected, but screenshot capture failed.');
+        return;
+      }
+
+      const result = await postUnrelatedDetection({
+        authtoken: token,
+        trackerId: trackerIdRef.current,
+        selection: currentSelection,
+        keywords: unrelatedMatches,
+        activeWindow,
+        keystroke: activity.keystroke,
+        mouseclick: activity.mouseclick,
+        mousemove: activity.mousemove,
+      });
+
+      if (result.error_va_code) {
+        lastSentUnrelatedRef.current = '';
+        const msg = (result.error_message || '').toLowerCase();
+        if (result.error_va_code === 401 || msg.includes('another device') || msg.includes('already logged') || msg.includes('invalid token') || msg.includes('session')) {
+          signOut();
+          setStatus(result.error_message ?? 'Signed out due to session change.');
+          return;
+        }
+        setStatus(result.error_message ?? 'Unable to report unrelated activity.');
+        return;
+      }
+
+      if (result.id) {
+        updateTrackerId(result.id);
+      }
+
+      await uploadScreenshot({
+        authtoken: token,
+        trackerId: trackerIdRef.current,
+        capture,
+        keystroke: activity.keystroke,
+        mouseclick: activity.mouseclick,
+        mousemove: activity.mousemove,
+      });
+      setLastCaptureAt(Date.now());
+      try {
+        window.desktopApi.log({
+          level: 'info',
+          message: 'Unrelated reported with screenshot: ' + formatUnrelatedRemark(unrelatedMatches),
+        });
+      } catch (e) {}
+    } catch (e) {
+      lastSentUnrelatedRef.current = '';
+      try { window.desktopApi.log({ level: 'error', message: 'Failed to report unrelated with screenshot: ' + String(e) }); } catch (_) {}
+    }
+  }
+
+  function notifyUnrelatedDetected(matches: string[], windowTitle: string) {
+    setUnrelatedAlert({ matches, title: windowTitle, visible: true });
+    setShowUnrelatedBanner(true);
+    if (showDebug) {
+      try { window.alert('Unrelated detected: ' + matches.join(', ')); } catch (e) {}
+    }
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      try {
+        new window.Notification('Unrelated activity detected', {
+          body: `${matches.join(', ')} — ${windowTitle}`,
+        });
+      } catch (e) {}
+    }
+    try { window.desktopApi.log({ level: 'warn', message: 'Unrelated detected: ' + matches.join(', ') }); } catch (e) {}
+  }
+
+  async function checkAndReportUnrelated(currentSelection: TrackingSelection) {
+    if (!token) return;
+
+    const activeWindow = await window.desktopApi.getActiveWindow();
+    setDebugActiveWindow({ title: activeWindow?.windowTitle || '', module: activeWindow?.moduleName || '' });
+    setLastActiveTitle(activeWindow?.windowTitle || '');
+
+    const taskIdKey = String(currentSelection.task.id);
+    const unrelatedMatches = detectUnrelatedKeywords(activeWindow, employerKeywords, {
+      ignored: ignoredKeywords[taskIdKey] || [],
+      snoozes,
+    });
+
+    if (!unrelatedMatches.length) {
+      lastSentUnrelatedRef.current = '';
+      return;
+    }
+
+    const reportKey = buildUnrelatedReportKey(unrelatedMatches, activeWindow?.windowTitle || '');
+    if (reportKey === lastSentUnrelatedRef.current) return;
+
+    lastSentUnrelatedRef.current = reportKey;
+    notifyUnrelatedDetected(unrelatedMatches, activeWindow?.windowTitle || '');
+
+    await reportUnrelatedWithScreenshot(currentSelection, unrelatedMatches, activeWindow);
   }
 
   async function sendHeartbeat(currentSelection: TrackingSelection, timeInOut: 0 | 1) {
@@ -448,74 +576,13 @@ function App() {
     } else {
       idleStatus = 0; // Working
     }
-    // detect unrelated by checking active window title and module name for keywords
-    let unrelatedMatches: string[] = [];
-    const titleToCheck = (activeWindow?.windowTitle || '') + ' ' + (activeWindow?.moduleName || '') + ' ' + (activeWindow?.moduleFilename || '');
-
-    // ignore detection when the active window belongs to this app
-    const appNameChecks = ['va worker time tracker', 'va-worker-time-tracker', 'va_worker_time_tracker', 'va4hire', 'va worker'];
-    const lcTitle = (activeWindow?.windowTitle || '').toLowerCase();
-    const lcModule = (activeWindow?.moduleName || '').toLowerCase();
-    let isSelf = false;
-    for (const a of appNameChecks) {
-      if (lcTitle.indexOf(a) !== -1 || lcModule.indexOf(a) !== -1) {
-        isSelf = true;
-        break;
-      }
-    }
-    if (isSelf) {
-      // do not flag our own app window as unrelated; continue to send heartbeat without detection
-      unrelatedMatches = [];
-    } else {
-      for (const kw of employerKeywords) {
-        const k = String(kw).toLowerCase().trim();
-        if (!k) continue;
-        if (titleToCheck.toLowerCase().indexOf(k) !== -1) {
-          unrelatedMatches.push(k);
-        }
-      }
-    }
-    const lc = titleToCheck.toLowerCase();
-    for (const kw of employerKeywords) {
-      const k = String(kw).toLowerCase().trim();
-      if (!k) continue;
-      if (lc.indexOf(k) !== -1) {
-        unrelatedMatches.push(k);
-      }
-    }
-
-    // filter by ignored keywords for this task
     const taskIdKey = String(currentSelection?.task?.id || selectedTaskId || '');
-    const taskIgnored = ignoredKeywords[taskIdKey] || [];
-    unrelatedMatches = unrelatedMatches.filter(k => !taskIgnored.includes(k));
-    // filter by snooze
-    const nowTs = Date.now();
-    unrelatedMatches = unrelatedMatches.filter(k => {
-      const until = snoozes[k];
-      return !(until && until > nowTs);
+    const unrelatedMatches = detectUnrelatedKeywords(activeWindow, employerKeywords, {
+      ignored: ignoredKeywords[taskIdKey] || [],
+      snoozes,
     });
 
-    let remarkExtra = '';
-    if (unrelatedMatches.length) {
-      remarkExtra = 'UNRELATED:' + unrelatedMatches.join(',');
-      // show an in-app popup and native notification when unrelated detected
-      try {
-        setUnrelatedAlert({ matches: unrelatedMatches, title: activeWindow?.windowTitle || '', visible: true });
-        setShowUnrelatedBanner(true);
-        // debug modal to force visibility when debugging
-        if (showDebug) {
-          try { window.alert('Unrelated detected: ' + unrelatedMatches.join(', ')); } catch (e) {}
-        }
-        if (typeof window !== 'undefined' && 'Notification' in window) {
-          try {
-            new window.Notification('Unrelated activity detected', {
-              body: `${unrelatedMatches.join(', ')} — ${activeWindow?.windowTitle || ''}`,
-            });
-          } catch (e) {}
-        }
-        try { window.desktopApi.log({ level: 'warn', message: 'Unrelated detected: ' + unrelatedMatches.join(', ') }); } catch (e) {}
-      } catch (e) {}
-    }
+    const remarkExtra = unrelatedMatches.length ? formatUnrelatedRemark(unrelatedMatches) : '';
 
     const result = await postHeartbeat({
       authtoken: token,
@@ -558,19 +625,17 @@ function App() {
     if (!token) return;
     const activeWindow = await window.desktopApi.getActiveWindow();
     setDebugActiveWindow({ title: activeWindow?.windowTitle || '', module: activeWindow?.moduleName || '' });
-    const titleToCheck = (activeWindow?.windowTitle || '') + ' ' + (activeWindow?.moduleName || '') + ' ' + (activeWindow?.moduleFilename || '');
-    const lc = titleToCheck.toLowerCase();
-    let matches: string[] = [];
-    for (const kw of employerKeywords) {
-      const k = String(kw).toLowerCase().trim();
-      if (!k) continue;
-      if (lc.indexOf(k) !== -1) matches.push(k);
-    }
+    const taskIdKey = String(selectedTaskId || '');
+    const matches = detectUnrelatedKeywords(activeWindow, employerKeywords, {
+      ignored: ignoredKeywords[taskIdKey] || [],
+      snoozes,
+    });
     setLastDetectedMatches(matches);
     if (matches.length) {
-      // trigger the same popup flow
-      setUnrelatedAlert({ matches, title: activeWindow?.windowTitle || '', visible: true });
-      setShowUnrelatedBanner(true);
+      notifyUnrelatedDetected(matches, activeWindow?.windowTitle || '');
+      if (selection) {
+        void reportUnrelatedWithScreenshot(selection, matches, activeWindow);
+      }
       try { window.desktopApi.log({ level: 'warn', message: 'Manual detect: ' + matches.join(', ') }); } catch (e) {}
     }
   }
@@ -608,10 +673,17 @@ function App() {
       heartbeatTimer.current = null;
     }
 
+    if (detectionTimer.current) {
+      window.clearInterval(detectionTimer.current);
+      detectionTimer.current = null;
+    }
+
     if (screenshotTimer.current) {
       window.clearInterval(screenshotTimer.current);
       screenshotTimer.current = null;
     }
+
+    lastSentUnrelatedRef.current = '';
   }
 
   function signOut() {
@@ -659,6 +731,7 @@ function App() {
       });
     } catch (e) {}
     setUnrelatedAlert(null);
+    lastSentUnrelatedRef.current = '';
   }
 
   function snoozeKeyword(keyword: string, minutes = 30) {
@@ -667,6 +740,7 @@ function App() {
     setSnoozes(next);
     localStorage.setItem('va-snoozes', JSON.stringify(next));
     setUnrelatedAlert(null);
+    lastSentUnrelatedRef.current = '';
   }
 
   function ignoreKeywordForTask(keyword: string) {
@@ -677,6 +751,7 @@ function App() {
     setIgnoredKeywords(next);
     localStorage.setItem('va-ignored-keywords', JSON.stringify(next));
     setUnrelatedAlert(null);
+    lastSentUnrelatedRef.current = '';
   }
 
   return (

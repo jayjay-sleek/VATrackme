@@ -26,6 +26,19 @@ const API_BASE_URL = 'https://www.va4hire.ph/app/api/';
 let mainWindow;
 let tray;
 
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 if (isDev) {
   app.setPath('userData', path.join(__dirname, '..', '.electron-user-data'));
 }
@@ -116,7 +129,7 @@ function createTray() {
   );
 }
 
-app.whenReady().then(() => {
+if (gotTheLock) app.whenReady().then(() => {
   // remove default application menu globally
   try {
     if (typeof Menu.setApplicationMenu === 'function') Menu.setApplicationMenu(null);
@@ -212,26 +225,97 @@ ipcMain.handle('desktop:capture-screen', async () => {
   };
 });
 
+function logDetection(message) {
+  try {
+    fs.appendFileSync(path.join(app.getPath('userData'), 'detection.log'), `[${new Date().toISOString()}] ${message}${os.EOL}`);
+  } catch (e) {}
+}
+
+function tryRequireActiveWin() {
+  try {
+    return require('active-win');
+  } catch (primaryError) {
+    const candidates = [
+      path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'active-win'),
+      path.join(__dirname, '..', 'node_modules', 'active-win'),
+    ];
+    for (const candidate of candidates) {
+      try {
+        return require(candidate);
+      } catch (e) {
+        // try next candidate
+      }
+    }
+    throw primaryError;
+  }
+}
+
+function mapActiveWinResult(win) {
+  return {
+    processId: win.owner && win.owner.processId ? win.owner.processId : 0,
+    windowHandle: win.id || '',
+    windowTitle: win.title || '',
+    moduleName: win.owner && win.owner.name ? win.owner.name : app.name,
+    moduleFilename: win.owner && win.owner.path ? win.owner.path : process.execPath,
+    memoryUsage: 0,
+    pagedMemorySize: 0,
+  };
+}
+
+function getMacActiveWindowViaOsascript() {
+  const { execFileSync } = require('child_process');
+  const script = [
+    'tell application "System Events"',
+    '  tell (first application process whose frontmost is true)',
+    '    set appName to name',
+    '    set winTitle to ""',
+    '    try',
+    '      if (count of windows) > 0 then',
+    '        set winTitle to name of window 1',
+    '      end if',
+    '    end try',
+    '    return appName & "|||" & winTitle',
+    '  end tell',
+    'end tell',
+  ].join('\n');
+  const raw = execFileSync('osascript', ['-e', script], { encoding: 'utf8', timeout: 3000 }).trim();
+  const sep = raw.indexOf('|||');
+  const appName = sep >= 0 ? raw.slice(0, sep) : raw;
+  const winTitle = sep >= 0 ? raw.slice(sep + 3) : '';
+  return {
+    processId: 0,
+    windowHandle: '',
+    windowTitle: winTitle || appName,
+    moduleName: appName,
+    moduleFilename: '',
+    memoryUsage: 0,
+    pagedMemorySize: 0,
+  };
+}
+
 ipcMain.handle('desktop:get-active-window', async () => {
   // First try native active-win (if installed)
   try {
-    const activeWin = require('active-win');
+    const activeWin = tryRequireActiveWin();
     const win = await activeWin();
     if (win) {
-      const out = {
-        processId: win.owner && win.owner.processId ? win.owner.processId : 0,
-        windowHandle: win.id || '',
-        windowTitle: win.title || '',
-        moduleName: win.title || (win.owner && win.owner.name ? win.owner.name : app.name),
-        moduleFilename: win.owner && win.owner.path ? win.owner.path : process.execPath,
-        memoryUsage: 0,
-        pagedMemorySize: 0,
-      };
-      try { fs.appendFileSync(path.join(app.getPath('userData'), 'detection.log'), `[${new Date().toISOString()}] native: ${JSON.stringify(out)}${os.EOL}`); } catch (e) {}
+      const out = mapActiveWinResult(win);
+      logDetection(`native: ${JSON.stringify(out)}`);
       return out;
     }
   } catch (e) {
-    try { fs.appendFileSync(path.join(app.getPath('userData'), 'detection.log'), `[${new Date().toISOString()}] active-win not available: ${String(e)}${os.EOL}`); } catch (ee) {}
+    logDetection(`active-win not available: ${String(e)}`);
+  }
+
+  // macOS AppleScript fallback - requires Accessibility permission
+  if (process.platform === 'darwin') {
+    try {
+      const out = getMacActiveWindowViaOsascript();
+      logDetection(`osascript: ${JSON.stringify(out)}`);
+      return out;
+    } catch (e) {
+      logDetection(`osascript failed: ${String(e)}`);
+    }
   }
 
   // PowerShell fallback (Windows only) - reads foreground window title and process info
@@ -266,15 +350,15 @@ Write-Output (ConvertTo-Json $out -Compress);
         processId: parsed.pid || 0,
         windowHandle: '',
         windowTitle: parsed.title || '',
-        moduleName: parsed.title || parsed.processName || app.name,
+        moduleName: parsed.processName || parsed.title || app.name,
         moduleFilename: parsed.processPath || process.execPath,
         memoryUsage: 0,
         pagedMemorySize: 0,
       };
-      try { fs.appendFileSync(path.join(app.getPath('userData'), 'detection.log'), `[${new Date().toISOString()}] powershell: ${JSON.stringify(out)}${os.EOL}`); } catch (e) {}
+      logDetection(`powershell: ${JSON.stringify(out)}`);
       return out;
     } catch (e) {
-      try { fs.appendFileSync(path.join(app.getPath('userData'), 'detection.log'), `[${new Date().toISOString()}] powershell failed: ${String(e)}${os.EOL}`); } catch (ee) {}
+      logDetection(`powershell failed: ${String(e)}`);
     }
   }
 
@@ -288,7 +372,7 @@ Write-Output (ConvertTo-Json $out -Compress);
     memoryUsage: 0,
     pagedMemorySize: 0,
   };
-  try { fs.appendFileSync(path.join(app.getPath('userData'), 'detection.log'), `[${new Date().toISOString()}] fallback: ${JSON.stringify(fallback)}${os.EOL}`); } catch (e) {}
+  logDetection(`fallback: ${JSON.stringify(fallback)}`);
   return fallback;
 });
 
@@ -365,7 +449,7 @@ ipcMain.handle('api:request', async (_event, request) => {
 });
 
 // lightweight local HTTP receiver for browser extension (tab URLs)
-try {
+if (gotTheLock) try {
   const http = require('node:http');
   const receiverPort = 42816;
   const server = http.createServer(async (req, res) => {
@@ -414,6 +498,13 @@ try {
       return;
     }
     res.writeHead(404); res.end();
+  });
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      try { console.warn('Tab receiver port', receiverPort, 'already in use'); } catch (_) {}
+      return;
+    }
+    try { console.error('Tab receiver error', err); } catch (_) {}
   });
   server.listen(receiverPort, '127.0.0.1', () => {
     try { console.log('Tab receiver listening on', receiverPort); } catch (_) {}
