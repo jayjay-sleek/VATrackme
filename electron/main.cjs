@@ -45,10 +45,10 @@ if (isDev) {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 780,
-    minWidth: 980,
-    minHeight: 640,
+    width: 880,
+    height: 600,
+    minWidth: 720,
+    minHeight: 480,
     title: 'VA Trackme',
     autoHideMenuBar: true,
     icon: path.join(__dirname, '..', 'assets', 'icon-clock-circle.png'),

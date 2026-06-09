@@ -15,6 +15,12 @@ body {
   margin: 0;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 button,
 input,
 select {
@@ -306,7 +312,124 @@ dd {
   margin: 0;
 }
 
-@media (max-width: 900px) {
+.app-shell.compact {
+  padding: 6px;
+}
+
+.app-shell.compact .hero {
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.app-shell.compact .hero h1 {
+  font-size: 14px;
+}
+
+.app-shell.compact .card {
+  padding: 10px;
+}
+
+.app-shell.compact .card h2,
+.app-shell.compact .card h3 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+
+.app-shell.compact .card h4 {
+  font-size: 12px;
+  margin: 0 0 6px;
+}
+
+.app-shell.compact .dashboard {
+  gap: 8px;
+  grid-template-columns: 1.2fr 0.8fr;
+}
+
+.app-shell.compact .profile-card h2 {
+  font-size: 15px;
+}
+
+.app-shell.compact .tracker-card,
+.app-shell.compact .activity-card {
+  gap: 10px;
+}
+
+.app-shell.compact .metric {
+  min-width: 72px;
+  padding: 6px 8px;
+}
+
+.app-shell.compact .metric span {
+  font-size: 11px;
+}
+
+.app-shell.compact .metric strong {
+  font-size: 14px;
+}
+
+.app-shell.compact .field-grid {
+  gap: 6px;
+}
+
+.app-shell.compact .actions {
+  gap: 8px;
+}
+
+.app-shell.compact label {
+  font-size: 12px;
+}
+
+.app-shell.compact input,
+.app-shell.compact select {
+  margin-top: 4px;
+  padding: 6px 8px;
+}
+
+.app-shell.compact button {
+  padding: 6px 10px;
+}
+
+.app-shell.compact dl {
+  gap: 6px;
+}
+
+.app-shell.compact dl div {
+  padding-bottom: 6px;
+}
+
+.app-shell.compact .login-center {
+  min-height: calc(100vh - 24px);
+}
+
+.app-shell.compact .login-card {
+  gap: 8px;
+  max-width: 340px;
+}
+
+.app-shell.compact .login-card h2 {
+  font-size: 16px;
+}
+
+.app-shell.login-view {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100vh;
+  overflow: hidden;
+}
+
+.app-shell.login-view .hero {
+  flex-shrink: 0;
+  margin-bottom: 8px;
+}
+
+.app-shell.login-view .login-center {
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-width: 760px) {
   .dashboard,
   .field-grid {
     grid-template-columns: 1fr;
@@ -316,6 +439,16 @@ dd {
   .profile-card {
     display: grid;
   }
+}
+
+.start-reminder-banner {
+  background: #fff8e6;
+  border: 1px solid #f5d27a;
+  border-radius: 8px;
+  color: #8a5b00;
+  font-weight: 600;
+  margin-bottom: 10px;
+  padding: 8px 10px;
 }
 
 .unrelated-popup {
@@ -349,4 +482,51 @@ dd {
   color: #3730a3;
   padding: 8px 12px;
   border-radius: 8px;
+}
+
+.idle-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 24, 40, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 10000;
+}
+
+.idle-popup {
+  width: 100%;
+  max-width: 360px;
+  padding: 14px;
+}
+
+.idle-header {
+  font-weight: 800;
+  color: #b45309;
+  margin-bottom: 10px;
+}
+
+.idle-body {
+  display: grid;
+  gap: 10px;
+}
+
+.idle-duration-line {
+  margin: 0 0 10px 0;
+}
+
+.idle-duration {
+  color: #172033;
+  font-weight: 800;
+}
+
+.idle-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.idle-actions button {
+  min-width: 88px;
 }

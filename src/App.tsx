@@ -7,7 +7,32 @@ const savedTokenKey = 'va-tracker-auth-token';
 const defaultHeartbeatSeconds = 60;
 const defaultScreenshotSeconds = 600;
 const defaultDetectionSeconds = 10;
+const defaultIdleCheckSeconds = 10;
+const startTrackingReminderSeconds = 30;
 const connectionCheckMs = 20000;
+
+function formatIdleDuration(totalSeconds: number): string {
+  const secondsTotal = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(secondsTotal / 3600);
+  const minutes = Math.floor((secondsTotal % 3600) / 60);
+  const seconds = secondsTotal % 60;
+
+  if (hours > 0) {
+    const minutePart = minutes > 0 ? ` and ${minutes} minute${minutes === 1 ? '' : 's'}` : '';
+    return `${hours} hour${hours === 1 ? '' : 's'}${minutePart}`;
+  }
+  if (minutes > 0) {
+    const secondPart = seconds > 0 ? ` and ${seconds} second${seconds === 1 ? '' : 's'}` : '';
+    return `${minutes} minute${minutes === 1 ? '' : 's'}${secondPart}`;
+  }
+  return `${seconds} second${seconds === 1 ? '' : 's'}`;
+}
+
+const idleStatusLabels: Record<number, string> = {
+  0: 'Working',
+  2: 'Breaktime',
+  3: 'Away',
+};
 
 function App() {
   const [userName, setUserName] = useState('');
@@ -22,6 +47,7 @@ function App() {
   const [taskCompleted, setTaskCompleted] = useState(false);
   const [trackerId, setTrackerId] = useState<number | undefined>();
   const [isTracking, setIsTracking] = useState(false);
+  const [showStartReminder, setShowStartReminder] = useState(false);
   const [status, setStatus] = useState('Ready');
   const [unrelatedAlert, setUnrelatedAlert] = useState<{
     matches: string[];
@@ -42,12 +68,26 @@ function App() {
   const [testKeyword, setTestKeyword] = useState('');
   const [activity, setActivity] = useState({ keystroke: 0, mouseclick: 0, mousemove: 0 });
   const [lastCaptureAt, setLastCaptureAt] = useState<number | null>(null);
+  const [idlePopup, setIdlePopup] = useState<{
+    idleMinutes: number;
+    idleSeconds: number;
+    openedAt: number;
+  } | null>(null);
+  const [idleSelectedStatus, setIdleSelectedStatus] = useState('0');
+  const [idleRemark, setIdleRemark] = useState('');
+  const [idleSubmitting, setIdleSubmitting] = useState(false);
+  const [idleLiveSeconds, setIdleLiveSeconds] = useState(0);
   const heartbeatTimer = useRef<number | null>(null);
   const screenshotTimer = useRef<number | null>(null);
   const detectionTimer = useRef<number | null>(null);
+  const idleTimer = useRef<number | null>(null);
+  const startReminderTimer = useRef<number | null>(null);
   const trackingSelectionRef = useRef<TrackingSelection | null>(null);
   const lastSentUnrelatedRef = useRef('');
   const trackerIdRef = useRef<number | undefined>();
+  const wasIdleRef = useRef(false);
+  const idleSendInFlightRef = useRef(false);
+  const idlePopupVisibleRef = useRef(false);
   const activityRef = useRef(activity);
   const [isAppFocused, setIsAppFocused] = useState(true);
   const fallbackTimer = useRef<number | null>(null);
@@ -442,6 +482,72 @@ function App() {
     };
   }, [isTracking, token, employerKeywords, ignoredKeywords, snoozes]);
 
+  useEffect(() => {
+    if (!isTracking || !token || !trackingSelectionRef.current) return;
+
+    const currentSelection = trackingSelectionRef.current;
+    const tick = () => { void checkIdleAndShowPopup(currentSelection); };
+
+    tick();
+    const timer = window.setInterval(tick, defaultIdleCheckSeconds * 1000);
+    idleTimer.current = timer;
+
+    return () => {
+      window.clearInterval(timer);
+      idleTimer.current = null;
+    };
+  }, [isTracking, token, data?.minute_idle_time]);
+
+  useEffect(() => {
+    if (!idlePopup) return;
+
+    const updateIdleDuration = () => {
+      const elapsed = Math.floor((Date.now() - idlePopup.openedAt) / 1000);
+      setIdleLiveSeconds(idlePopup.idleSeconds + elapsed);
+    };
+
+    updateIdleDuration();
+    const timer = window.setInterval(updateIdleDuration, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [idlePopup]);
+
+  function remindStartTracking() {
+    setShowStartReminder(true);
+    setStatus('Tracking is stopped. Start working to begin time tracking.');
+
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      try {
+        new window.Notification('Start tracking', {
+          body: 'Time tracking is stopped. Click Start Tracking to begin working.',
+        });
+      } catch (e) {}
+    }
+  }
+
+  useEffect(() => {
+    if (!token || isTracking) {
+      setShowStartReminder(false);
+      if (startReminderTimer.current) {
+        window.clearInterval(startReminderTimer.current);
+        startReminderTimer.current = null;
+      }
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      remindStartTracking();
+    }, startTrackingReminderSeconds * 1000);
+    startReminderTimer.current = timer;
+
+    return () => {
+      window.clearInterval(timer);
+      startReminderTimer.current = null;
+    };
+  }, [token, isTracking]);
+
   async function stopTracking() {
     if (selection) {
       await sendHeartbeat(selection, 0);
@@ -535,6 +641,161 @@ function App() {
     try { window.desktopApi.log({ level: 'warn', message: 'Unrelated detected: ' + matches.join(', ') }); } catch (e) {}
   }
 
+  async function getIdleStatus(): Promise<{ idleStatus: number; idleMinutes: number; idleSeconds: number }> {
+    const idleSeconds = await window.desktopApi.getIdleSeconds();
+    const idleMinutes = idleSeconds / 60;
+    const idleLimit = Number(data?.minute_idle_time ?? 0);
+    // idle_status codes: 0=Working,1=Idle,2=Breaktime,3=Away,4=Absent
+    const idleStatus = idleLimit > 0 && idleMinutes >= idleLimit ? 1 : 0;
+    return { idleStatus, idleMinutes, idleSeconds };
+  }
+
+  async function prepareIdleSessionBeforePopup(
+    currentSelection: TrackingSelection,
+    idleMinutes: number,
+  ) {
+    if (!trackerIdRef.current) return false;
+
+    const workingFlush = await sendHeartbeat(currentSelection, 1, {
+      idleStatus: 0,
+      remark: '',
+    });
+    if (workingFlush?.error_va_code) return false;
+
+    updateTrackerId(undefined);
+    const idleSession = await sendHeartbeat(currentSelection, 1, {
+      resetTrackerId: true,
+      idleStatus: 1,
+      idleMinutes,
+      remark: '',
+    });
+    if (idleSession?.error_va_code) return false;
+
+    return true;
+  }
+
+  async function checkIdleAndShowPopup(currentSelection: TrackingSelection) {
+    if (!token || !isTracking || idleSendInFlightRef.current || idlePopupVisibleRef.current) return;
+
+    const { idleStatus, idleMinutes, idleSeconds } = await getIdleStatus();
+    if (idleStatus !== 1) {
+      wasIdleRef.current = false;
+      return;
+    }
+    if (wasIdleRef.current) return;
+    if (!trackerIdRef.current) return;
+
+    idleSendInFlightRef.current = true;
+    try {
+      const ready = await prepareIdleSessionBeforePopup(currentSelection, idleMinutes);
+      if (!ready) return;
+
+      idlePopupVisibleRef.current = true;
+      setIdleSelectedStatus('0');
+      setIdleRemark('');
+      setIdlePopup({ idleMinutes, idleSeconds, openedAt: Date.now() });
+      setIdleLiveSeconds(idleSeconds);
+      setStatus('Idle detected — please explain why you were idle.');
+
+      if (typeof window !== 'undefined' && 'Notification' in window) {
+        try {
+          new window.Notification('Idle detected', {
+            body: 'Please explain why you were idle.',
+          });
+        } catch (e) {}
+      }
+    } finally {
+      idleSendInFlightRef.current = false;
+    }
+  }
+
+  async function submitIdleWithReset(
+    currentSelection: TrackingSelection,
+    selectedStatus: number,
+    remark: string,
+    idleMinutes: number,
+  ) {
+    const idleResult = await sendHeartbeat(currentSelection, 1, {
+      idleStatus: 1,
+      idleMinutes,
+      remark,
+    });
+    if (idleResult?.error_va_code) return false;
+
+    if (selectedStatus === 2 || selectedStatus === 3) {
+      const statusResult = await sendHeartbeat(currentSelection, 1, {
+        idleStatus: selectedStatus,
+        remark: '',
+      });
+      if (statusResult?.error_va_code) return false;
+
+      updateTrackerId(undefined);
+      const resumeResult = await sendHeartbeat(currentSelection, 1, {
+        resetTrackerId: true,
+        idleStatus: 0,
+        remark: '',
+      });
+      if (resumeResult?.error_va_code) {
+        wasIdleRef.current = false;
+        return false;
+      }
+
+      return true;
+    }
+
+    updateTrackerId(undefined);
+    const resumeResult = await sendHeartbeat(currentSelection, 1, {
+      resetTrackerId: true,
+      idleStatus: 0,
+      remark: '',
+    });
+    if (resumeResult?.error_va_code) {
+      wasIdleRef.current = false;
+      return false;
+    }
+
+    return true;
+  }
+
+  async function handleIdleGo() {
+    const remark = idleRemark.trim();
+    if (!remark) {
+      setStatus('Enter a reason for being idle.');
+      return;
+    }
+
+    const currentSelection = trackingSelectionRef.current;
+    if (!currentSelection || !token || !idlePopup) return;
+
+    const selectedStatus = Number(idleSelectedStatus);
+    if (![0, 2, 3].includes(selectedStatus)) return;
+
+    idleSendInFlightRef.current = true;
+    setIdleSubmitting(true);
+
+    try {
+      const ok = await submitIdleWithReset(
+        currentSelection,
+        selectedStatus,
+        remark,
+        idleLiveSeconds / 60,
+      );
+      if (!ok) return;
+
+      wasIdleRef.current = true;
+      idlePopupVisibleRef.current = false;
+      setIdlePopup(null);
+      setStatus(
+        selectedStatus === 0
+          ? `Working resumed — tracker session ${trackerIdRef.current ?? 'updated'}.`
+          : `${idleStatusLabels[selectedStatus]} recorded — working resumed (tracker session ${trackerIdRef.current ?? 'updated'}).`,
+      );
+    } finally {
+      idleSendInFlightRef.current = false;
+      setIdleSubmitting(false);
+    }
+  }
+
   async function checkAndReportUnrelated(currentSelection: TrackingSelection) {
     if (!token) return;
 
@@ -562,20 +823,33 @@ function App() {
     await reportUnrelatedWithScreenshot(currentSelection, unrelatedMatches, activeWindow);
   }
 
-  async function sendHeartbeat(currentSelection: TrackingSelection, timeInOut: 0 | 1) {
-    const idleSeconds = await window.desktopApi.getIdleSeconds();
+  async function sendHeartbeat(
+    currentSelection: TrackingSelection,
+    timeInOut: 0 | 1,
+    options?: {
+      resetTrackerId?: boolean;
+      idleMinutes?: number;
+      idleStatus?: number;
+      remark?: string;
+    },
+  ) {
+    let idleStatus: number;
+    let idleMinutes: number;
+    if (options?.idleStatus != null) {
+      idleStatus = options.idleStatus;
+      idleMinutes = options.idleMinutes ?? 0;
+    } else if (options?.idleMinutes != null) {
+      idleStatus = 1;
+      idleMinutes = options.idleMinutes;
+    } else {
+      const idle = await getIdleStatus();
+      idleStatus = idle.idleStatus;
+      idleMinutes = idle.idleMinutes;
+    }
+
     const activeWindow = await window.desktopApi.getActiveWindow();
     setDebugActiveWindow({ title: activeWindow?.windowTitle || '', module: activeWindow?.moduleName || '' });
     setLastActiveTitle(activeWindow?.windowTitle || '');
-    const idleMinutes = idleSeconds / 60;
-    const idleLimit = Number(data?.minute_idle_time ?? 0);
-    // idle_status codes: 0=Working,1=Idle,2=Breaktime,3=Away,4=Absent
-    let idleStatus = 0;
-    if (idleLimit > 0 && idleMinutes >= idleLimit) {
-      idleStatus = 1; // Idle reached
-    } else {
-      idleStatus = 0; // Working
-    }
     const taskIdKey = String(currentSelection?.task?.id || selectedTaskId || '');
     const unrelatedMatches = detectUnrelatedKeywords(activeWindow, employerKeywords, {
       ignored: ignoredKeywords[taskIdKey] || [],
@@ -583,14 +857,18 @@ function App() {
     });
 
     const remarkExtra = unrelatedMatches.length ? formatUnrelatedRemark(unrelatedMatches) : '';
+    const trackerIdForRequest = options?.resetTrackerId ? undefined : trackerIdRef.current;
+    const remark = options?.remark != null
+      ? options.remark + (remarkExtra ? ` | ${remarkExtra}` : '')
+      : (idleStatus === 1 ? `Idle for ${Math.round(idleMinutes)} minutes` : '') + (remarkExtra ? (idleStatus === 1 ? ' | ' : '') + remarkExtra : '');
 
     const result = await postHeartbeat({
       authtoken: token,
-      trackerId: trackerIdRef.current,
+      trackerId: trackerIdForRequest,
       selection: currentSelection,
       timeInOut,
       idleStatus,
-      remark: (idleStatus ? `Idle for ${Math.round(idleMinutes)} minutes` : '') + (remarkExtra ? ' | ' + remarkExtra : ''),
+      remark,
       keystroke: activityRef.current.keystroke,
       mouseclick: activityRef.current.mouseclick,
       mousemove: activityRef.current.mousemove,
@@ -683,7 +961,16 @@ function App() {
       screenshotTimer.current = null;
     }
 
+    if (idleTimer.current) {
+      window.clearInterval(idleTimer.current);
+      idleTimer.current = null;
+    }
+
     lastSentUnrelatedRef.current = '';
+    wasIdleRef.current = false;
+    idleSendInFlightRef.current = false;
+    idlePopupVisibleRef.current = false;
+    setIdlePopup(null);
   }
 
   function signOut() {
@@ -755,7 +1042,7 @@ function App() {
   }
 
   return (
-    <main className="app-shell compact">
+    <main className={`app-shell compact${token ? '' : ' login-view'}`}>
       <section className="hero">
         <div>
           <p className="eyebrow">VA Trackme</p>
@@ -811,7 +1098,7 @@ function App() {
             <div>
               <p className="eyebrow">Signed In</p>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <img src={data?.profile_url} alt="profile" style={{ width: 48, height: 48, borderRadius: 10, objectFit: 'cover', border: '1px solid #e6edf6' }} />
+                <img src={data?.profile_url} alt="profile" style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover', border: '1px solid #e6edf6' }} />
                 <div>
                   <h2 style={{ margin: 0 }}>{data ? `${data.first_name} ${data.last_name}` : 'Loading...'}</h2>
                   <p className="muted" style={{ margin: 0 }}>{data?.title ?? data?.user_name}</p>
@@ -819,18 +1106,23 @@ function App() {
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <div className="metric" style={{ minWidth: 90 }}>
+              <div className="metric" style={{ minWidth: 72 }}>
                 <span>Today</span>
                 <strong>{data?.hours_work_today ?? '0:00'}</strong>
               </div>
               <div>
-                <button className="secondary" onClick={openDashboard} style={{ padding: '8px 10px' }}>Open Dashboard</button>
+                <button className="secondary" onClick={openDashboard} style={{ padding: '6px 8px' }}>Open Dashboard</button>
               </div>
             </div>
           </div>
 
           <div className="card tracker-card">
             <h2>Current Task</h2>
+            {showStartReminder && !isTracking && (
+              <div className="start-reminder-banner" role="status">
+                Tracking is stopped. Click <strong>Start Tracking</strong> to begin working.
+              </div>
+            )}
             <div className="field-grid">
               <Select label="Employer" value={selectedEmployerId} items={employers} getId={(item) => item.emp_id} getLabel={(item) => item.company_name} onChange={(value) => {
                 setSelectedEmployerId(value);
@@ -892,11 +1184,11 @@ function App() {
                 <span style={{ fontWeight: 700 }}>Completed</span>
               </label>
             </div>
-            <div style={{ marginTop: 12 }}>
-              <h4 style={{ margin: '0 0 8px 0' }}>Recent completed tasks</h4>
-              <ul style={{ margin: 0, paddingLeft: 16 }}>
+            <div style={{ marginTop: 8 }}>
+              <h4 style={{ margin: '0 0 6px 0' }}>Recent completed tasks</h4>
+              <ul style={{ margin: 0, paddingLeft: 14, fontSize: 12 }}>
                 {recentCompletedTasks.length ? (recentCompletedTasks as any[]).map((t: any) => (
-                  <li key={String(t.id)} style={{ marginBottom: 6 }}>
+                  <li key={String(t.id)} style={{ marginBottom: 4 }}>
                     <div style={{ fontWeight: 700 }}>{t.title}</div>
                     <div style={{ fontSize: 12, color: '#6d7b91' }}>{t.completed_at ? new Date(t.completed_at).toLocaleString() : ''}</div>
                   </li>
@@ -911,11 +1203,46 @@ function App() {
               
               <div><dt>Keystrokes</dt><dd>{activity.keystroke}</dd></div>
               <div><dt>Mouse clicks</dt><dd>{activity.mouseclick}</dd></div>
-              <div><dt>Mouse moves</dt><dd>{activity.mousemove}</dd></div>
               <div><dt>Last screenshot</dt><dd>{lastCaptureAt ? new Date(lastCaptureAt).toLocaleTimeString() : '-'}</dd></div>
             </dl>
           </div>
         </section>
+      )}
+
+      {idlePopup && (
+        <div className="idle-modal-overlay" role="dialog" aria-modal="true" aria-live="polite">
+          <div className="idle-popup card">
+            <div className="idle-header">Idle detected</div>
+            <div className="idle-body">
+              <p className="muted idle-duration-line">
+                You have been idle for about{' '}
+                <strong className="idle-duration">{formatIdleDuration(idleLiveSeconds)}</strong>.
+                Please choose your status and explain why.
+              </p>
+              <label>
+                Status
+                <select value={idleSelectedStatus} onChange={(event) => setIdleSelectedStatus(event.target.value)}>
+                  <option value="0">Working</option>
+                  <option value="2">Breaktime</option>
+                  <option value="3">Away</option>
+                </select>
+              </label>
+              <label>
+                Reason
+                <input
+                  value={idleRemark}
+                  onChange={(event) => setIdleRemark(event.target.value)}
+                  placeholder="Why were you idle?"
+                />
+              </label>
+            </div>
+            <div className="idle-actions">
+              <button type="button" disabled={idleSubmitting || !idleRemark.trim()} onClick={() => void handleIdleGo()}>
+                {idleSubmitting ? 'Sending...' : 'Go'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {unrelatedAlert && unrelatedAlert.visible && (
