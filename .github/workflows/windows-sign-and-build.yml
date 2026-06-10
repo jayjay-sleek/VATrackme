@@ -21,6 +21,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate app icons
+        run: npm run icons
+
       - name: Build renderer
         run: npm run build
 

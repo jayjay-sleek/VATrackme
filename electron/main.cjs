@@ -2,6 +2,7 @@ const { app, BrowserWindow, desktopCapturer, ipcMain, nativeImage, powerMonitor,
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
+const { getWindowIconPath, getTrayIconImage } = require('./icons.cjs');
 
 // Prevent GPU/renderer issues on some Windows machines and ensure cache/userData is writable.
 try {
@@ -43,7 +44,12 @@ if (isDev) {
   app.setPath('userData', path.join(__dirname, '..', '.electron-user-data'));
 }
 
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.va.worker.timetracker');
+}
+
 function createWindow() {
+  const windowIcon = getWindowIconPath();
   mainWindow = new BrowserWindow({
     width: 880,
     height: 600,
@@ -51,7 +57,7 @@ function createWindow() {
     minHeight: 480,
     title: 'VA Trackme',
     autoHideMenuBar: true,
-    icon: path.join(__dirname, '..', 'assets', 'icon-clock-circle.png'),
+    ...(windowIcon ? { icon: windowIcon } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -115,12 +121,11 @@ function createWindow() {
 
 function createTray() {
   try {
-    const img = path.join(__dirname, '..', 'assets', 'icon-clock-circle.png');
-    tray = new Tray(nativeImage.createFromPath(img));
+    tray = new Tray(getTrayIconImage());
   } catch (e) {
     tray = new Tray(nativeImage.createEmpty());
   }
-  tray.setToolTip('VA Worker Time Tracker');
+  tray.setToolTip('VA Trackme');
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: 'Show', click: () => mainWindow?.show() },

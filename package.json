@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && electron .\"",
     "build": "tsc -b && vite build",
-    "dist": "npm run build && electron-builder",
+    "icons": "node scripts/generate-icons.js",
+    "dist": "npm run icons && npm run build && electron-builder",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -30,6 +31,7 @@
     "concurrently": "^9.2.1",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
+    "rcedit": "^5.0.2",
     "typescript": "^5.9.3",
     "vite": "^5.4.21",
     "wait-on": "^8.0.5"
@@ -37,24 +39,42 @@
   "build": {
     "appId": "com.va.worker.timetracker",
     "productName": "VA Trackme",
-    "icon": "build/icon.ico",
+    "icon": "icon.ico",
     "files": [
       "dist/**/*",
       "electron/**/*",
       "assets/**/*",
+      "build/icon.ico",
+      "build/icon.png",
+      "build/icon-16.png",
+      "build/icon-24.png",
+      "build/icon-32.png",
+      "build/icon-48.png",
+      "build/icon-64.png",
+      "build/icon-128.png",
+      "build/icon-256.png",
+      "build/icon-512.png",
+      "build/icon-1024.png",
       "package.json"
     ],
     "asarUnpack": [
       "node_modules/active-win/**/*"
     ],
+    "npmRebuild": false,
     "directories": {
       "buildResources": "build",
       "output": "installer-final3"
     },
+    "afterPack": "scripts/embed-win-icon.cjs",
     "win": {
       "target": "nsis",
-      "icon": "build/icon.ico",
+      "icon": "icon.ico",
       "signAndEditExecutable": false
+    },
+    "nsis": {
+      "installerIcon": "icon.ico",
+      "uninstallerIcon": "icon.ico",
+      "installerHeaderIcon": "icon.ico"
     },
     "mac": {
       "target": [
@@ -66,7 +86,7 @@
           ]
         }
       ],
-      "icon": "assets/icon-clock-circle.png",
+      "icon": "icon.png",
       "category": "public.app-category.productivity",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
