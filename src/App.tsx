@@ -240,12 +240,6 @@ function App() {
     visible: boolean;
   } | null>(null);
   const [showUnrelatedBanner, setShowUnrelatedBanner] = useState(false);
-  const [ignoredKeywords, setIgnoredKeywords] = useState<Record<string, string[]>>(() => {
-    try { return JSON.parse(localStorage.getItem('va-ignored-keywords') || '{}'); } catch { return {}; }
-  });
-  const [snoozes, setSnoozes] = useState<Record<string, number>>(() => {
-    try { return JSON.parse(localStorage.getItem('va-snoozes') || '{}'); } catch { return {}; }
-  });
   const [debugActiveWindow, setDebugActiveWindow] = useState<{ title: string; module: string } | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [lastDetectedMatches, setLastDetectedMatches] = useState<string[]>([]);
@@ -794,7 +788,7 @@ function App() {
       window.clearInterval(timer);
       detectionTimer.current = null;
     };
-  }, [isTracking, token, employerKeywords, ignoredKeywords, snoozes]);
+  }, [isTracking, token, employerKeywords]);
 
   useEffect(() => {
     if (!isTracking || !token || !trackingSelectionRef.current) return;
@@ -1119,11 +1113,7 @@ function App() {
     setDebugActiveWindow({ title: activeWindow?.windowTitle || '', module: activeWindow?.moduleName || '' });
     setLastActiveTitle(activeWindow?.windowTitle || '');
 
-    const taskIdKey = String(currentSelection.task.id);
-    const unrelatedMatches = detectUnrelatedKeywords(activeWindow, employerKeywords, {
-      ignored: ignoredKeywords[taskIdKey] || [],
-      snoozes,
-    });
+    const unrelatedMatches = detectUnrelatedKeywords(activeWindow, employerKeywords);
 
     if (!unrelatedMatches.length) {
       lastSentUnrelatedRef.current = '';
@@ -1166,11 +1156,7 @@ function App() {
     const activeWindow = await window.desktopApi.getActiveWindow();
     setDebugActiveWindow({ title: activeWindow?.windowTitle || '', module: activeWindow?.moduleName || '' });
     setLastActiveTitle(activeWindow?.windowTitle || '');
-    const taskIdKey = String(currentSelection?.task?.id || selectedTaskId || '');
-    const unrelatedMatches = detectUnrelatedKeywords(activeWindow, employerKeywords, {
-      ignored: ignoredKeywords[taskIdKey] || [],
-      snoozes,
-    });
+    const unrelatedMatches = detectUnrelatedKeywords(activeWindow, employerKeywords);
 
     const remarkExtra = unrelatedMatches.length ? formatUnrelatedRemark(unrelatedMatches) : '';
     const trackerIdForRequest = options?.resetTrackerId ? undefined : trackerIdRef.current;
@@ -1253,11 +1239,7 @@ function App() {
     if (!token) return;
     const activeWindow = await window.desktopApi.getActiveWindow();
     setDebugActiveWindow({ title: activeWindow?.windowTitle || '', module: activeWindow?.moduleName || '' });
-    const taskIdKey = String(selectedTaskId || '');
-    const matches = detectUnrelatedKeywords(activeWindow, employerKeywords, {
-      ignored: ignoredKeywords[taskIdKey] || [],
-      snoozes,
-    });
+    const matches = detectUnrelatedKeywords(activeWindow, employerKeywords);
     setLastDetectedMatches(matches);
     if (matches.length) {
       notifyUnrelatedDetected(matches, activeWindow?.windowTitle || '');
@@ -1349,51 +1331,6 @@ function App() {
     } catch (e) {
       window.open(url, '_blank');
     }
-  }
-
-  // popup actions
-  async function markAsRelated() {
-    if (!token || !trackerIdRef.current) return;
-    // send a simple postHeartbeat that clears remark unrelated
-    const sel = selection ?? {
-      employer: selectedEmployer!,
-      project: selectedProject!,
-      task: tasks.find((t) => String(t.id) === selectedTaskId)!,
-    };
-    // remove UNRELATED from remark by sending empty remark
-    await sendHeartbeat(sel, 1);
-    // also inform server explicitly by posting to postdata with empty remark for the tracker id
-    try {
-      await window.desktopApi.apiRequest({
-        method: 'POST',
-        path: 'postdata/',
-        query: { authtoken: token },
-        bodyType: 'form',
-        body: { 'Timetracker[id]': String(trackerIdRef.current), 'Timetracker[remark]': '' },
-      });
-    } catch (e) {}
-    setUnrelatedAlert(null);
-    lastSentUnrelatedRef.current = '';
-  }
-
-  function snoozeKeyword(keyword: string, minutes = 30) {
-    const until = Date.now() + minutes * 60 * 1000;
-    const next = { ...snoozes, [keyword]: until };
-    setSnoozes(next);
-    localStorage.setItem('va-snoozes', JSON.stringify(next));
-    setUnrelatedAlert(null);
-    lastSentUnrelatedRef.current = '';
-  }
-
-  function ignoreKeywordForTask(keyword: string) {
-    const taskIdKey = String(selectedTaskId || '');
-    const arr = (ignoredKeywords[taskIdKey] || []).slice();
-    if (!arr.includes(keyword)) arr.push(keyword);
-    const next = { ...ignoredKeywords, [taskIdKey]: arr };
-    setIgnoredKeywords(next);
-    localStorage.setItem('va-ignored-keywords', JSON.stringify(next));
-    setUnrelatedAlert(null);
-    lastSentUnrelatedRef.current = '';
   }
 
   return (
@@ -1609,9 +1546,6 @@ function App() {
           </div>
           <div className="unrelated-actions">
             <button className="secondary" onClick={() => setUnrelatedAlert(null)}>Dismiss</button>
-            <button className="secondary" onClick={() => markAsRelated()}>Mark as related</button>
-            <button className="secondary" onClick={() => { if (unrelatedAlert.matches[0]) snoozeKeyword(unrelatedAlert.matches[0], 30); }}>Snooze 30m</button>
-            <button className="secondary" onClick={() => { if (unrelatedAlert.matches[0]) ignoreKeywordForTask(unrelatedAlert.matches[0]); }}>Ignore for task</button>
           </div>
         </div>
       )}
