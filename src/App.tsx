@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getTrackerData, login, postHeartbeat, postUnrelatedDetection, uploadScreenshot, addTask, updateTaskStatus, API_BASE_URL, pingApi } from './api';
-import { buildUnrelatedReportKey, detectUnrelatedKeywords, formatUnrelatedRemark, parseEmployerKeywords } from './detection';
+import {
+  buildUnrelatedReportKey,
+  collectTrackerWorkerIds,
+  detectUnrelatedKeywords,
+  extractWorkerIdsExempted,
+  formatUnrelatedRemark,
+  isWorkerExemptFromUnrelatedDetection,
+  parseEmployerKeywords,
+} from './detection';
 import type { ActiveWindowInfo, ConnectionStatus, Employer, Project, Task, TrackerData, TrackingSelection } from './types';
 
 const savedTokenKey = 'va-tracker-auth-token';
@@ -309,6 +317,27 @@ function App() {
     () => parseEmployerKeywords(selectedEmployer),
     [selectedEmployer],
   );
+  const workerIdsExempted = useMemo(
+    () => extractWorkerIdsExempted(data, selectedEmployer),
+    [data, selectedEmployer],
+  );
+  const trackerWorkerIds = useMemo(
+    () => collectTrackerWorkerIds(data, selection),
+    [data, selection],
+  );
+  const isUnrelatedDetectionExempt = useMemo(
+    () => isWorkerExemptFromUnrelatedDetection(trackerWorkerIds, workerIdsExempted),
+    [trackerWorkerIds, workerIdsExempted],
+  );
+  const isUnrelatedDetectionExemptRef = useRef(false);
+
+  useEffect(() => {
+    isUnrelatedDetectionExemptRef.current = isUnrelatedDetectionExempt;
+    if (!isUnrelatedDetectionExempt) return;
+    setUnrelatedAlert(null);
+    setShowUnrelatedBanner(false);
+    lastSentUnrelatedRef.current = '';
+  }, [isUnrelatedDetectionExempt]);
 
   useEffect(() => {
     if (token) {
@@ -788,7 +817,7 @@ function App() {
       window.clearInterval(timer);
       detectionTimer.current = null;
     };
-  }, [isTracking, token, employerKeywords]);
+  }, [isTracking, token, employerKeywords, isUnrelatedDetectionExempt]);
 
   useEffect(() => {
     if (!isTracking || !token || !trackingSelectionRef.current) return;
@@ -1107,7 +1136,7 @@ function App() {
   }
 
   async function checkAndReportUnrelated(currentSelection: TrackingSelection) {
-    if (!token) return;
+    if (!token || isUnrelatedDetectionExemptRef.current) return;
 
     const activeWindow = await window.desktopApi.getActiveWindow();
     setDebugActiveWindow({ title: activeWindow?.windowTitle || '', module: activeWindow?.moduleName || '' });
@@ -1156,7 +1185,9 @@ function App() {
     const activeWindow = await window.desktopApi.getActiveWindow();
     setDebugActiveWindow({ title: activeWindow?.windowTitle || '', module: activeWindow?.moduleName || '' });
     setLastActiveTitle(activeWindow?.windowTitle || '');
-    const unrelatedMatches = detectUnrelatedKeywords(activeWindow, employerKeywords);
+    const unrelatedMatches = isUnrelatedDetectionExemptRef.current
+      ? []
+      : detectUnrelatedKeywords(activeWindow, employerKeywords);
 
     const remarkExtra = unrelatedMatches.length ? formatUnrelatedRemark(unrelatedMatches) : '';
     const trackerIdForRequest = options?.resetTrackerId ? undefined : trackerIdRef.current;
@@ -1236,7 +1267,7 @@ function App() {
 
   // Run detection immediately (debug / manual trigger)
   async function runDetectionNow() {
-    if (!token) return;
+    if (!token || isUnrelatedDetectionExemptRef.current) return;
     const activeWindow = await window.desktopApi.getActiveWindow();
     setDebugActiveWindow({ title: activeWindow?.windowTitle || '', module: activeWindow?.moduleName || '' });
     const matches = detectUnrelatedKeywords(activeWindow, employerKeywords);

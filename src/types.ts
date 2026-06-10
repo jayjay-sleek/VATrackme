@@ -35,12 +35,16 @@ export type Employer = {
   company_time: string;
   worker_site_visit?: number;
   worker_app_process?: number;
+  worker_id?: number;
   unrelated_keywords?: string | string[];
+  worker_ids_exempted?: number[] | string[] | string;
   projects?: Record<string, Project>;
 };
 
 export type TrackerData = {
   id: number;
+  worker_id?: number;
+  user_id?: number;
   user_name: string;
   user_auth_key: string;
   first_name: string;
@@ -51,6 +55,7 @@ export type TrackerData = {
   interval_send_data?: number;
   interval_send_screen_capture?: number;
   minute_idle_time?: number;
+  worker_ids_exempted?: number[] | string[] | string;
   employers?: Record<string, Employer> | null;
   error_va_code?: number;
   error_message?: string;

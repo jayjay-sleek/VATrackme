@@ -1,4 +1,4 @@
-import type { ActiveWindowInfo, Employer } from './types';
+import type { ActiveWindowInfo, Employer, TrackerData, TrackingSelection } from './types';
 
 const DEFAULT_UNRELATED_KEYWORDS = [
   'facebook', 'twitter', 'instagram', 'tiktok', 'youtube', 'pinterest',
@@ -35,6 +35,126 @@ export function buildDetectionText(activeWindow: ActiveWindowInfo | null | undef
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function pickNumericId(value: unknown): number | undefined {
+  const id = Number(value);
+  return Number.isFinite(id) && id > 0 ? id : undefined;
+}
+
+function pickExemptedValue(source: Record<string, unknown> | null | undefined): unknown {
+  if (!source) return undefined;
+  return source.worker_ids_exempted
+    ?? source.WorkerIdsExempted
+    ?? source.worker_ids_exempted_unrelated;
+}
+
+export function parseWorkerIdsExempted(value: unknown): number[] {
+  if (value == null || value === '') return [];
+  if (Array.isArray(value)) {
+    const ids: number[] = [];
+    for (const entry of value) {
+      if (entry != null && typeof entry === 'object') {
+        const record = entry as Record<string, unknown>;
+        const nested = pickNumericId(record.id ?? record.worker_id ?? record.user_id);
+        if (nested) ids.push(nested);
+        continue;
+      }
+      const id = pickNumericId(entry);
+      if (id) ids.push(id);
+    }
+    return [...new Set(ids)];
+  }
+  if (typeof value === 'object') {
+    const ids: number[] = [];
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (entry === false || entry === 0 || entry === '0') continue;
+      const fromKey = pickNumericId(key);
+      if (fromKey) ids.push(fromKey);
+      const fromValue = pickNumericId(entry);
+      if (fromValue) ids.push(fromValue);
+    }
+    return [...new Set(ids)];
+  }
+  if (typeof value === 'number') {
+    const id = pickNumericId(value);
+    return id ? [id] : [];
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      try {
+        return parseWorkerIdsExempted(JSON.parse(trimmed) as unknown);
+      } catch {
+        // fall through to comma-separated parsing
+      }
+    }
+    return [...new Set(
+      trimmed
+        .split(/[,\s;]+/)
+        .map((item) => pickNumericId(item))
+        .filter((id): id is number => id != null),
+    )];
+  }
+  return [];
+}
+
+export function extractWorkerIdsExempted(
+  data: TrackerData | null | undefined,
+  employer?: Employer | null,
+): number[] {
+  const merged = new Set<number>();
+  for (const value of [
+    pickExemptedValue(employer as Record<string, unknown> | undefined),
+    pickExemptedValue(data as Record<string, unknown> | undefined),
+  ]) {
+    for (const id of parseWorkerIdsExempted(value)) {
+      merged.add(id);
+    }
+  }
+  return [...merged];
+}
+
+export function collectTrackerWorkerIds(
+  data: TrackerData | null | undefined,
+  selection?: TrackingSelection | null,
+): number[] {
+  const raw = data as Record<string, unknown> | null | undefined;
+  const employerRaw = selection?.employer as Record<string, unknown> | undefined;
+  const candidates = [
+    raw?.id,
+    raw?.worker_id,
+    raw?.Worker_id,
+    raw?.user_id,
+    raw?.User_id,
+    selection?.project?.user_id,
+    employerRaw?.worker_id,
+    employerRaw?.Worker_id,
+    employerRaw?.user_id,
+    employerRaw?.User_id,
+  ];
+  const ids = new Set<number>();
+  for (const candidate of candidates) {
+    const id = pickNumericId(candidate);
+    if (id) ids.add(id);
+  }
+  return [...ids];
+}
+
+export function isWorkerExemptFromUnrelatedDetection(
+  workerIds: Array<number | undefined> | number | undefined,
+  exemptedWorkerIds: number[],
+): boolean {
+  if (!exemptedWorkerIds.length) return false;
+  const normalizedWorkerIds = new Set(
+    (Array.isArray(workerIds) ? workerIds : [workerIds])
+      .map((id) => pickNumericId(id))
+      .filter((id): id is number => id != null)
+      .map((id) => String(id)),
+  );
+  if (!normalizedWorkerIds.size) return false;
+  return exemptedWorkerIds.some((id) => normalizedWorkerIds.has(String(id)));
 }
 
 export function parseEmployerKeywords(
