@@ -288,6 +288,14 @@ label {
   margin: 0;
 }
 
+.status-error {
+  color: #d92d20;
+}
+
+.status-success {
+  color: #2b7a2b;
+}
+
 dl {
   display: grid;
   gap: 10px;

@@ -34,6 +34,186 @@ const idleStatusLabels: Record<number, string> = {
   3: 'Away',
 };
 
+function getTaskIdFromAddResponse(res: Record<string, unknown>) {
+  const nested = (res.Task ?? res.task) as Record<string, unknown> | undefined;
+  const taskId = res.task_id ?? res.id ?? nested?.id ?? nested?.task_id;
+  return taskId != null ? String(taskId) : '';
+}
+
+function parseAddTaskResponse(res: Record<string, unknown>): AddTaskResponse {
+  const nested = (res.Task ?? res.task) as Record<string, unknown> | undefined;
+  return {
+    id: Number(res.id ?? nested?.id ?? 0) || undefined,
+    task_id: Number(res.task_id ?? nested?.id ?? res.id ?? 0) || undefined,
+    title: String(res.title ?? nested?.title ?? ''),
+    status: Number(res.status ?? nested?.status ?? 0),
+    task_total_hours: pickString(res.task_total_hours ?? nested?.task_total_hours),
+    task_total_hours_today: pickString(res.task_total_hours_today ?? nested?.task_total_hours_today),
+    error_va_code: Number(res.error_va_code ?? 0) || undefined,
+    error_message: String(res.error_message ?? ''),
+  };
+}
+
+function pickString(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const text = String(value).trim();
+  return text || undefined;
+}
+
+function formatAutoTaskTitle(projectTitle: string): string {
+  const dateLabel = new Date().toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+  return `${projectTitle} Task ${dateLabel}`;
+}
+
+function getTaskTotalHours(task: Task | undefined): string | null {
+  if (!task) return null;
+  const hours = task.task_total_hours
+    ?? (task as Task & { total_hours?: string }).total_hours
+    ?? (task as Task & { hours_consumed?: string }).hours_consumed
+    ?? (task as Task & { time_spent?: string }).time_spent
+    ?? (task as Task & { hours?: string }).hours;
+  if (hours == null || String(hours).trim() === '') return '0:00';
+  return String(hours);
+}
+
+function mergeTaskRecord(existing: Task | undefined, incoming: Task): Task {
+  const merged: Task = {
+    ...(existing ?? {}),
+    ...incoming,
+    id: incoming.id,
+    title: incoming.title,
+    status: incoming.status,
+    project_id: incoming.project_id,
+  };
+  if (pickString(incoming.task_total_hours)) {
+    merged.task_total_hours = incoming.task_total_hours;
+  } else if (existing?.task_total_hours) {
+    merged.task_total_hours = existing.task_total_hours;
+  }
+  if (pickString(incoming.task_total_hours_today)) {
+    merged.task_total_hours_today = incoming.task_total_hours_today;
+  } else if (existing?.task_total_hours_today) {
+    merged.task_total_hours_today = existing.task_total_hours_today;
+  }
+  return merged;
+}
+
+function findTrackingSelection(
+  trackerData: TrackerData,
+  employerId: string,
+  projectId: string,
+  taskId: string,
+): TrackingSelection | null {
+  const employer = Object.values(trackerData.employers ?? {}).find((item) => String(item.emp_id) === employerId);
+  const project = employer
+    ? Object.values(employer.projects ?? {}).find((item) => String(item.id) === projectId)
+    : undefined;
+  const task = project
+    ? Object.values(project.tasks ?? {}).find((item) => String(item.id) === taskId)
+    : undefined;
+  if (!employer || !project || !task) return null;
+  return { employer, project, task };
+}
+
+type AddTaskResponse = {
+  id?: number;
+  task_id?: number;
+  title?: string;
+  status?: number;
+  task_total_hours?: string;
+  task_total_hours_today?: string;
+  error_va_code?: number;
+  error_message?: string;
+};
+
+function buildTaskFromAddResponse(
+  taskId: string,
+  title: string,
+  projectId: number | string,
+  res: AddTaskResponse,
+): Task {
+  const task: Task = {
+    id: Number(taskId),
+    title: pickString(res.title) ?? title,
+    status: res.status ?? 0,
+    project_id: Number(projectId),
+  };
+  if (pickString(res.task_total_hours)) task.task_total_hours = res.task_total_hours;
+  if (pickString(res.task_total_hours_today)) task.task_total_hours_today = res.task_total_hours_today;
+  return task;
+}
+
+function upsertTaskInTrackerData(
+  trackerData: TrackerData,
+  employerId: string,
+  projectId: string,
+  task: Task,
+): TrackerData {
+  const employers = { ...(trackerData.employers ?? {}) };
+  const employerEntry = Object.entries(employers).find(([, item]) => String(item.emp_id) === employerId);
+  if (!employerEntry) return trackerData;
+
+  const [employerKey, employer] = employerEntry;
+  const projects = { ...(employer.projects ?? {}) };
+  const projectEntry = Object.entries(projects).find(([, item]) => String(item.id) === projectId);
+  if (!projectEntry) return trackerData;
+
+  const [projectKey, project] = projectEntry;
+  const tasks = { ...(project.tasks ?? {}) };
+  const taskKey = String(task.id);
+  tasks[taskKey] = mergeTaskRecord(tasks[taskKey], task);
+
+  projects[projectKey] = { ...project, tasks };
+  employers[employerKey] = { ...employer, projects };
+
+  return { ...trackerData, employers };
+}
+
+function updateTaskHoursInTrackerData(
+  trackerData: TrackerData | null,
+  taskId: string,
+  hours: { task_total_hours?: string; task_total_hours_today?: string },
+): TrackerData | null {
+  if (!trackerData || (!hours.task_total_hours && !hours.task_total_hours_today)) {
+    return trackerData;
+  }
+
+  const employers = { ...(trackerData.employers ?? {}) };
+  let changed = false;
+
+  for (const [employerKey, employer] of Object.entries(employers)) {
+    const projects = { ...(employer.projects ?? {}) };
+    let projectChanged = false;
+
+    for (const [projectKey, project] of Object.entries(projects)) {
+      const tasks = { ...(project.tasks ?? {}) };
+      const taskKey = Object.keys(tasks).find((key) => String(tasks[key].id) === taskId) ?? taskId;
+      if (!tasks[taskKey]) continue;
+
+      tasks[taskKey] = {
+        ...tasks[taskKey],
+        task_total_hours: hours.task_total_hours ?? tasks[taskKey].task_total_hours,
+        task_total_hours_today: hours.task_total_hours_today ?? tasks[taskKey].task_total_hours_today,
+      };
+      projects[projectKey] = { ...project, tasks };
+      projectChanged = true;
+      changed = true;
+    }
+
+    if (projectChanged) {
+      employers[employerKey] = { ...employer, projects };
+    }
+  }
+
+  return changed ? { ...trackerData, employers } : trackerData;
+}
+
+type StatusKind = 'info' | 'error' | 'success';
+
 function App() {
   const [userName, setUserName] = useState('');
   const [password, setPassword] = useState('');
@@ -49,6 +229,11 @@ function App() {
   const [isTracking, setIsTracking] = useState(false);
   const [showStartReminder, setShowStartReminder] = useState(false);
   const [status, setStatus] = useState('Ready');
+  const [statusKind, setStatusKind] = useState<StatusKind>('info');
+  const reportStatus = (message: string, kind: StatusKind = 'info') => {
+    setStatus(message);
+    setStatusKind(kind);
+  };
   const [unrelatedAlert, setUnrelatedAlert] = useState<{
     matches: string[];
     title: string;
@@ -94,6 +279,8 @@ function App() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('checking');
   const needsDataRefreshRef = useRef(false);
   const refreshInFlightRef = useRef(false);
+  const syncInFlightRef = useRef(false);
+  const taskSyncTimer = useRef<number | null>(null);
 
   const employers = useMemo(() => Object.values(data?.employers ?? {}), [data]);
   const selectedEmployer = employers.find((employer) => String(employer.emp_id) === selectedEmployerId);
@@ -107,7 +294,7 @@ function App() {
     return arr.sort((a, b) => String(a.title ?? '').localeCompare(String(b.title ?? ''), undefined, { sensitivity: 'base' }));
   }, [selectedProject]);
   const selectedTask = tasks.find((task) => String(task.id) === selectedTaskId);
-  const selectedTaskHours = (selectedTask && ((selectedTask as any).task_total_hours ?? (selectedTask as any).total_hours ?? (selectedTask as any).hours_consumed ?? (selectedTask as any).time_spent ?? (selectedTask as any).hours)) || null;
+  const selectedTaskHours = getTaskTotalHours(selectedTask);
   const recentCompletedTasks = useMemo(() => {
     // Prefer tasks_completed from the selected project if provided by API
     const completedSource = selectedProject && (selectedProject as any).tasks_completed ? Object.values((selectedProject as any).tasks_completed) : tasks.filter((t) => (t as any).status === 1);
@@ -286,10 +473,47 @@ function App() {
     };
   }, []);
 
+  async function syncTrackerDataSilently(authToken = token) {
+    if (!authToken || syncInFlightRef.current || refreshInFlightRef.current) return false;
+
+    syncInFlightRef.current = true;
+    try {
+      const nextData = await getTrackerData(authToken);
+      if ((nextData as any).network_error || nextData.error_va_code === -1) {
+        return false;
+      }
+      if (nextData.error_va_code) {
+        return false;
+      }
+
+      setConnectionStatus('connected');
+      needsDataRefreshRef.current = false;
+      setData(nextData);
+
+      const activeSelection = trackingSelectionRef.current;
+      if (activeSelection) {
+        const fresh = findTrackingSelection(
+          nextData,
+          String(activeSelection.employer.emp_id),
+          String(activeSelection.project.id),
+          String(activeSelection.task.id),
+        );
+        if (fresh) trackingSelectionRef.current = fresh;
+      }
+
+      return true;
+    } catch (e) {
+      try { window.desktopApi.log({ level: 'error', message: 'syncTrackerDataSilently failed: ' + String(e) }); } catch (_) {}
+      return false;
+    } finally {
+      syncInFlightRef.current = false;
+    }
+  }
+
   async function refreshData(authToken = token, options?: { silent?: boolean }) {
     if (!authToken || refreshInFlightRef.current) return;
     refreshInFlightRef.current = true;
-    if (!options?.silent) setStatus('Loading projects and tasks...');
+    if (!options?.silent) reportStatus('Loading projects and tasks...');
 
     try {
       const nextData = await getTrackerData(authToken);
@@ -297,7 +521,7 @@ function App() {
       if ((nextData as any).network_error || nextData.error_va_code === -1) {
         setConnectionStatus('offline');
         needsDataRefreshRef.current = true;
-        if (!options?.silent) setStatus('No internet connection. Retrying automatically...');
+        if (!options?.silent) reportStatus('No internet connection. Retrying automatically...', 'error');
         return;
       }
 
@@ -305,18 +529,18 @@ function App() {
         const msg = (nextData.error_message || '').toLowerCase();
         if (nextData.error_va_code === 401 || msg.includes('another device') || msg.includes('already logged') || msg.includes('invalid token') || msg.includes('session')) {
           signOut();
-          setStatus(nextData.error_message ?? 'Signed out due to session change.');
+          reportStatus(nextData.error_message ?? 'Signed out due to session change.', 'error');
           return;
         }
         setConnectionStatus('connected');
-        setStatus(nextData.error_message ?? 'Unable to load tracker data.');
+        reportStatus(nextData.error_message ?? 'Unable to load tracker data.', 'error');
         return;
       }
 
       setConnectionStatus('connected');
       needsDataRefreshRef.current = false;
       setData(nextData);
-      if (!options?.silent) setStatus('Projects and tasks loaded.');
+      if (!options?.silent) reportStatus('Projects and tasks loaded.', 'success');
 
       const employerList = Object.values(nextData.employers ?? {});
       const firstEmployer = employerList[0];
@@ -341,7 +565,7 @@ function App() {
     } catch (e) {
       setConnectionStatus('offline');
       needsDataRefreshRef.current = true;
-      if (!options?.silent) setStatus('No internet connection. Retrying automatically...');
+      if (!options?.silent) reportStatus('No internet connection. Retrying automatically...', 'error');
       try { window.desktopApi.log({ level: 'error', message: 'refreshData failed: ' + String(e) }); } catch (_) {}
     } finally {
       refreshInFlightRef.current = false;
@@ -350,12 +574,12 @@ function App() {
 
   async function handleLogin(event: React.FormEvent) {
     event.preventDefault();
-    setStatus('Signing in...');
+    reportStatus('Signing in...');
 
     const browserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
     if (!browserOnline || !(await pingApi())) {
       setConnectionStatus('offline');
-      setStatus('No internet connection. Retrying automatically...');
+      reportStatus('No internet connection. Retrying automatically...', 'error');
       return;
     }
 
@@ -363,10 +587,10 @@ function App() {
     if ('error_message' in response) {
       if ((response as any).network_error) {
         setConnectionStatus('offline');
-        setStatus('No internet connection. Retrying automatically...');
+        reportStatus('No internet connection. Retrying automatically...', 'error');
         return;
       }
-      setStatus(response.error_message);
+      reportStatus(response.error_message, 'error');
       return;
     }
 
@@ -380,32 +604,128 @@ function App() {
       localStorage.setItem('va-auto-login', '0');
     }
     setToken(response.user_auth_key);
-    setStatus(response.success_message);
+    reportStatus(response.success_message, 'success');
+  }
+
+  async function createTaskAndSelect(
+    projectId: number | string,
+    title: string,
+    employerId: string,
+  ): Promise<{ taskId: string; selection: TrackingSelection | null; error?: string }> {
+    if (!token) {
+      return { taskId: '', selection: null, error: 'Sign in first.' };
+    }
+
+    const rawRes = await addTask(token, projectId, title);
+    const res = parseAddTaskResponse(rawRes as Record<string, unknown>);
+    const taskId = getTaskIdFromAddResponse(rawRes as Record<string, unknown>);
+    if (!taskId || res?.error_va_code) {
+      return { taskId: '', selection: null, error: res?.error_message ?? 'Failed to create task.' };
+    }
+
+    updateTrackerId(undefined);
+
+    const nextData = await getTrackerData(token);
+    if ((nextData as any).network_error || nextData.error_va_code === -1) {
+      return { taskId: '', selection: null, error: 'No internet connection.' };
+    }
+    if (nextData.error_va_code) {
+      return { taskId: '', selection: null, error: nextData.error_message ?? 'Unable to load tracker data.' };
+    }
+
+    const fromData = findTrackingSelection(nextData, employerId, String(projectId), taskId);
+    const createdTask = buildTaskFromAddResponse(taskId, title, projectId, res);
+    if (fromData?.task.task_total_hours && !pickString(createdTask.task_total_hours)) {
+      createdTask.task_total_hours = fromData.task.task_total_hours;
+    }
+    if (fromData?.task.task_total_hours_today && !pickString(createdTask.task_total_hours_today)) {
+      createdTask.task_total_hours_today = fromData.task.task_total_hours_today;
+    }
+
+    const mergedData = upsertTaskInTrackerData(nextData, employerId, String(projectId), createdTask);
+
+    setConnectionStatus('connected');
+    setData(mergedData);
+    setSelectedTaskId(taskId);
+    setTaskCompleted(createdTask.status === 1);
+
+    const selection = findTrackingSelection(mergedData, employerId, String(projectId), taskId);
+
+    return {
+      taskId,
+      selection,
+      error: selection ? undefined : 'Created task could not be selected.',
+    };
+  }
+
+  async function switchActiveTrackingTask(nextSelection: TrackingSelection) {
+    trackingSelectionRef.current = nextSelection;
+    setTaskCompleted(nextSelection.task.status === 1);
+    const result = await sendHeartbeat(nextSelection, 1, { resetTrackerId: true });
+    if (result?.error_va_code) {
+      reportStatus(result.error_message ?? 'Unable to switch task.', 'error');
+      return false;
+    }
+
+    setData((current) => {
+      if (!current) return current;
+      const refreshed = updateTaskHoursInTrackerData(current, String(nextSelection.task.id), {
+        task_total_hours: result.task_total_hours,
+        task_total_hours_today: result.task_total_hours_today,
+      });
+      const selection = refreshed
+        ? findTrackingSelection(refreshed, selectedEmployerId, selectedProjectId, String(nextSelection.task.id))
+        : null;
+      if (selection) trackingSelectionRef.current = selection;
+      return refreshed;
+    });
+
+    reportStatus(`Tracking: ${nextSelection.task.title}`);
+    return true;
+  }
+
+  async function handleTaskSelectionChange(taskId: string) {
+    setSelectedTaskId(taskId);
+    if (!isTracking || !token || !data) return;
+
+    const nextSelection = findTrackingSelection(data, selectedEmployerId, selectedProjectId, taskId);
+    if (!nextSelection) return;
+
+    await switchActiveTrackingTask(nextSelection);
   }
 
   async function handleAddTask() {
     if (!token) {
-      setStatus('Sign in first.');
+      reportStatus('Sign in first.', 'error');
       return;
     }
-    if (!selectedProject) {
-      setStatus('Select a project to add a task.');
+    if (!selectedProject || !selectedEmployerId) {
+      reportStatus('Select a project to add a task.', 'error');
       return;
     }
     const title = newTaskTitle.trim();
     if (!title) {
-      setStatus('Enter a task title.');
+      reportStatus('Enter a task title.', 'error');
       return;
     }
-    setStatus('Creating task...');
-    const res = await addTask(token, selectedProject.id, title);
-    if (res?.id) {
-      await refreshData(token);
-      setSelectedTaskId(String(res.id));
-      setNewTaskTitle('');
-      setStatus('Task created.');
+    reportStatus('Creating task...');
+    const created = await createTaskAndSelect(selectedProject.id, title, selectedEmployerId);
+    if (created.error || !created.taskId) {
+      reportStatus(created.error ?? 'Failed to create task.', 'error');
+      return;
+    }
+
+    if (created.selection && isTracking) {
+      await switchActiveTrackingTask(created.selection);
     } else {
-      setStatus(res?.error_message ?? 'Failed to create task.');
+      void syncTrackerDataSilently();
+    }
+
+    setNewTaskTitle('');
+    if (isTracking && created.selection) {
+      reportStatus(`Tracking: ${created.selection.task.title}`);
+    } else {
+      reportStatus('Task created.', 'success');
     }
   }
 
@@ -413,42 +733,33 @@ function App() {
 
   async function startTracking() {
     if (!token) {
-      setStatus('Sign in first.');
+      reportStatus('Sign in first.', 'error');
       return;
     }
 
+    let currentSelection = selection;
+
     // If there's no selected task but a project is chosen, create a default task.
-    if (!selection) {
-      if (!selectedProject) {
-        setStatus('Select a project before starting the tracker.');
+    if (!currentSelection) {
+      if (!selectedProject || !selectedEmployerId) {
+        reportStatus('Select a project before starting the tracker.', 'error');
         return;
       }
 
-      setStatus('Creating default task...');
-      // Try to use the active window title for the default task; fallback to project-based name.
-      const aw = await window.desktopApi.getActiveWindow();
-      const windowTitle = aw?.windowTitle ? String(aw.windowTitle).trim() : '';
-      const defaultTitle = windowTitle && windowTitle.length > 0 ? windowTitle : `${selectedProject.title} task`;
-      const created = await addTask(token, selectedProject.id, defaultTitle);
-      if (created?.id) {
-        await refreshData(token);
-        setSelectedTaskId(String(created.id));
-      } else {
-        setStatus(created?.error_message ?? 'Failed to create default task.');
+      reportStatus('Creating default task...');
+      const defaultTitle = formatAutoTaskTitle(selectedProject.title);
+      const created = await createTaskAndSelect(selectedProject.id, defaultTitle, selectedEmployerId);
+      if (created.error || !created.selection) {
+        reportStatus(created.error ?? 'Failed to create default task.', 'error');
         return;
       }
+      currentSelection = created.selection;
     }
-
-    const currentSelection: TrackingSelection = selection ?? {
-      employer: selectedEmployer!,
-      project: selectedProject!,
-      task: tasks.find((t) => String(t.id) === selectedTaskId)!,
-    };
 
     trackingSelectionRef.current = currentSelection;
     setIsTracking(true);
-    setStatus(`Tracking: ${currentSelection.task.title}`);
-    const result = await sendHeartbeat(currentSelection, 1);
+    reportStatus(`Tracking: ${currentSelection.task.title}`);
+    const result = await sendHeartbeat(currentSelection, 1, { resetTrackerId: true });
 
     if (result?.id) {
       updateTrackerId(result.id);
@@ -458,7 +769,8 @@ function App() {
     const screenshotSeconds = normalizeInterval(result?.interval_send_screen_capture ?? data?.interval_send_screen_capture, defaultScreenshotSeconds);
 
     heartbeatTimer.current = window.setInterval(() => {
-      void sendHeartbeat(currentSelection, 1);
+      const activeSelection = trackingSelectionRef.current;
+      if (activeSelection) void sendHeartbeat(activeSelection, 1);
     }, heartbeatSeconds * 1000);
 
     screenshotTimer.current = window.setInterval(() => {
@@ -469,8 +781,10 @@ function App() {
   useEffect(() => {
     if (!isTracking || !token || !trackingSelectionRef.current) return;
 
-    const currentSelection = trackingSelectionRef.current;
-    const tick = () => { void checkAndReportUnrelated(currentSelection); };
+    const tick = () => {
+      const activeSelection = trackingSelectionRef.current;
+      if (activeSelection) void checkAndReportUnrelated(activeSelection);
+    };
 
     tick();
     const timer = window.setInterval(tick, defaultDetectionSeconds * 1000);
@@ -485,8 +799,10 @@ function App() {
   useEffect(() => {
     if (!isTracking || !token || !trackingSelectionRef.current) return;
 
-    const currentSelection = trackingSelectionRef.current;
-    const tick = () => { void checkIdleAndShowPopup(currentSelection); };
+    const tick = () => {
+      const activeSelection = trackingSelectionRef.current;
+      if (activeSelection) void checkIdleAndShowPopup(activeSelection);
+    };
 
     tick();
     const timer = window.setInterval(tick, defaultIdleCheckSeconds * 1000);
@@ -516,7 +832,7 @@ function App() {
 
   function remindStartTracking() {
     setShowStartReminder(true);
-    setStatus('Tracking is stopped. Start working to begin time tracking.');
+    reportStatus('Tracking is stopped. Start working to begin time tracking.');
 
     if (typeof window !== 'undefined' && 'Notification' in window) {
       try {
@@ -557,7 +873,7 @@ function App() {
     trackingSelectionRef.current = null;
     setIsTracking(false);
     updateTrackerId(undefined);
-    setStatus('Tracking stopped.');
+    reportStatus('Tracking stopped.');
   }
 
   async function reportUnrelatedWithScreenshot(
@@ -573,7 +889,7 @@ function App() {
       const capture = await window.desktopApi.captureScreen();
       if (!capture) {
         try { window.desktopApi.log({ level: 'error', message: 'Failed to capture screenshot for unrelated activity' }); } catch (_) {}
-        setStatus('Unrelated activity detected, but screenshot capture failed.');
+        reportStatus('Unrelated activity detected, but screenshot capture failed.', 'error');
         return;
       }
 
@@ -593,10 +909,10 @@ function App() {
         const msg = (result.error_message || '').toLowerCase();
         if (result.error_va_code === 401 || msg.includes('another device') || msg.includes('already logged') || msg.includes('invalid token') || msg.includes('session')) {
           signOut();
-          setStatus(result.error_message ?? 'Signed out due to session change.');
+          reportStatus(result.error_message ?? 'Signed out due to session change.', 'error');
           return;
         }
-        setStatus(result.error_message ?? 'Unable to report unrelated activity.');
+        reportStatus(result.error_message ?? 'Unable to report unrelated activity.', 'error');
         return;
       }
 
@@ -695,7 +1011,7 @@ function App() {
       setIdleRemark('');
       setIdlePopup({ idleMinutes, idleSeconds, openedAt: Date.now() });
       setIdleLiveSeconds(idleSeconds);
-      setStatus('Idle detected — please explain why you were idle.');
+      reportStatus('Idle detected — please explain why you were idle.');
 
       if (typeof window !== 'undefined' && 'Notification' in window) {
         try {
@@ -760,7 +1076,7 @@ function App() {
   async function handleIdleGo() {
     const remark = idleRemark.trim();
     if (!remark) {
-      setStatus('Enter a reason for being idle.');
+      reportStatus('Enter a reason for being idle.', 'error');
       return;
     }
 
@@ -785,7 +1101,7 @@ function App() {
       wasIdleRef.current = true;
       idlePopupVisibleRef.current = false;
       setIdlePopup(null);
-      setStatus(
+      reportStatus(
         selectedStatus === 0
           ? `Working resumed — tracker session ${trackerIdRef.current ?? 'updated'}.`
           : `${idleStatusLabels[selectedStatus]} recorded — working resumed (tracker session ${trackerIdRef.current ?? 'updated'}).`,
@@ -880,10 +1196,10 @@ function App() {
       if (result.error_va_code === 401 || msg.includes('another device') || msg.includes('already logged') || msg.includes('invalid token') || msg.includes('session')) {
         // automatic logout when session is invalidated elsewhere
         signOut();
-        setStatus(result.error_message ?? 'Signed out due to session change.');
+        reportStatus(result.error_message ?? 'Signed out due to session change.', 'error');
         return result;
       }
-      setStatus(result.error_message ?? 'Unable to send tracker data.');
+      reportStatus(result.error_message ?? 'Unable to send tracker data.', 'error');
       return result;
     }
 
@@ -891,12 +1207,46 @@ function App() {
       updateTrackerId(result.id);
     }
 
-    setData((current) => current ? { ...current, hours_work_today: result.hours_work_today ?? current.hours_work_today } : current);
+    const taskId = String(currentSelection.task.id);
+    setData((current) => {
+      const withTaskHours = updateTaskHoursInTrackerData(current, taskId, {
+        task_total_hours: result.task_total_hours,
+        task_total_hours_today: result.task_total_hours_today,
+      });
+      if (!withTaskHours) return current;
+      return { ...withTaskHours, hours_work_today: result.hours_work_today ?? withTaskHours.hours_work_today };
+    });
     setActivity({ keystroke: 0, mouseclick: 0, mousemove: 0 });
     activityRef.current = { keystroke: 0, mouseclick: 0, mousemove: 0 };
-    setStatus(`Last synced ${new Date().toLocaleTimeString()}`);
+    reportStatus(`Last synced ${new Date().toLocaleTimeString()}`);
+
+    if (timeInOut === 1) {
+      void syncTrackerDataSilently();
+    }
+
     return result;
   }
+
+  useEffect(() => {
+    if (!token || !selectedTaskId) {
+      if (taskSyncTimer.current) {
+        window.clearInterval(taskSyncTimer.current);
+        taskSyncTimer.current = null;
+      }
+      return;
+    }
+
+    const seconds = normalizeInterval(data?.interval_send_data, defaultHeartbeatSeconds);
+    const tick = () => { void syncTrackerDataSilently(); };
+    taskSyncTimer.current = window.setInterval(tick, seconds * 1000);
+
+    return () => {
+      if (taskSyncTimer.current) {
+        window.clearInterval(taskSyncTimer.current);
+        taskSyncTimer.current = null;
+      }
+    };
+  }, [token, selectedTaskId, data?.interval_send_data]);
 
   // Run detection immediately (debug / manual trigger)
   async function runDetectionNow() {
@@ -925,7 +1275,7 @@ function App() {
 
     const capture = await window.desktopApi.captureScreen();
     if (!capture) {
-      setStatus('Unable to capture screen.');
+      reportStatus('Unable to capture screen.', 'error');
       return;
     }
 
@@ -966,6 +1316,11 @@ function App() {
       idleTimer.current = null;
     }
 
+    if (taskSyncTimer.current) {
+      window.clearInterval(taskSyncTimer.current);
+      taskSyncTimer.current = null;
+    }
+
     lastSentUnrelatedRef.current = '';
     wasIdleRef.current = false;
     idleSendInFlightRef.current = false;
@@ -978,7 +1333,7 @@ function App() {
     localStorage.removeItem(savedTokenKey);
     setToken('');
     setData(null);
-    setStatus('Signed out.');
+    reportStatus('Signed out.');
   }
 
   function openDashboard() {
@@ -1089,7 +1444,7 @@ function App() {
             </div>
           <button type="submit">Login</button>
           <p style={{ margin: 6, fontSize: 13 }}><a href="#" onClick={(e) => { e.preventDefault(); const resetUrl = (typeof API_BASE_URL === 'string' ? API_BASE_URL.replace(/\/api\/?$/i, '/') : API_BASE_URL) + 'request-password-reset/'; try { if (window.desktopApi.openExternal) { window.desktopApi.openExternal(resetUrl); } else { window.open(resetUrl, '_blank'); } } catch (e) { window.open(resetUrl, '_blank'); } }}>Reset password</a></p>
-          <p className="status">{status}</p>
+          <p className={`status status-${statusKind}`}>{status}</p>
           </form>
         </div>
       ) : (
@@ -1133,7 +1488,7 @@ function App() {
                 setSelectedProjectId(value);
                 setSelectedTaskId('');
               }} />
-              <Select label="Task" value={selectedTaskId} items={tasks} getId={(item) => item.id} getLabel={(item) => item.title} onChange={setSelectedTaskId} />
+              <Select label="Task" value={selectedTaskId} items={tasks} getId={(item) => item.id} getLabel={(item) => item.title} onChange={(value) => void handleTaskSelectionChange(value)} />
             </div>
 
             <div className="add-task-row">
@@ -1156,7 +1511,7 @@ function App() {
               </button>
             </div>
 
-            <p className="status">{status}</p>
+            <p className={`status status-${statusKind}`}>{status}</p>
           </div>
  
           <div className="card task-complete-card">
@@ -1172,13 +1527,13 @@ function App() {
                   const checked = e.target.checked;
                   setTaskCompleted(checked);
                   if (!selectedTask || !token) return;
-                  setStatus(checked ? 'Completing task...' : 'Reopening task...');
+                  reportStatus(checked ? 'Completing task...' : 'Reopening task...');
                   const res = await updateTaskStatus(token, selectedTask.id, checked ? 1 : 0);
                   if (res?.error_va_code) {
-                    setStatus(res.error_message ?? 'Error updating task.');
+                    reportStatus(res.error_message ?? 'Error updating task.', 'error');
                   } else {
                     await refreshData(token);
-                    setStatus(checked ? 'Task completed' : 'Task reopened');
+                    reportStatus(checked ? 'Task completed' : 'Task reopened', 'success');
                   }
                 }} />
                 <span style={{ fontWeight: 700 }}>Completed</span>

@@ -76,16 +76,7 @@ export async function postUnrelatedDetection(input: UnrelatedDetectionInput) {
 export async function postHeartbeat(input: HeartbeatInput) {
   const trackerId = input.trackerId ?? 0;
 
-  return window.desktopApi.apiRequest<{
-    message?: string;
-    id?: number;
-    time_in_out?: number;
-    hours_work_today?: string;
-    interval_send_data?: number;
-    interval_send_screen_capture?: number;
-    error_va_code?: number;
-    error_message?: string;
-  }>({
+  const raw = await window.desktopApi.apiRequest<Record<string, unknown>>({
     method: 'POST',
     path: 'postdata/',
     query: { authtoken: input.authtoken },
@@ -107,6 +98,30 @@ export async function postHeartbeat(input: HeartbeatInput) {
       'Process[paged_memorysize]': input.activeWindow.pagedMemorySize,
     },
   });
+
+  return parseHeartbeatResponse(raw);
+}
+
+export function parseHeartbeatResponse(res: Record<string, unknown>) {
+  const nested = (res.Task ?? res.task) as Record<string, unknown> | undefined;
+  const pick = (value: unknown) => {
+    if (value == null) return undefined;
+    const text = String(value).trim();
+    return text || undefined;
+  };
+
+  return {
+    message: pick(res.message),
+    id: Number(res.id ?? nested?.id ?? 0) || undefined,
+    time_in_out: Number(res.time_in_out ?? 0) || undefined,
+    hours_work_today: pick(res.hours_work_today),
+    task_total_hours: pick(res.task_total_hours ?? nested?.task_total_hours),
+    task_total_hours_today: pick(res.task_total_hours_today ?? nested?.task_total_hours_today),
+    interval_send_data: Number(res.interval_send_data ?? 0) || undefined,
+    interval_send_screen_capture: Number(res.interval_send_screen_capture ?? 0) || undefined,
+    error_va_code: Number(res.error_va_code ?? 0) || undefined,
+    error_message: pick(res.error_message),
+  };
 }
 
 export async function uploadScreenshot(params: {
@@ -137,6 +152,11 @@ export async function addTask(authtoken: string, projectId: number | string, tit
   return window.desktopApi.apiRequest<{
     message?: string;
     id?: number;
+    task_id?: number;
+    title?: string;
+    status?: number;
+    task_total_hours?: string;
+    task_total_hours_today?: string;
     error_va_code?: number;
     error_message?: string;
   }>({
