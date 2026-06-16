@@ -19,4 +19,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
     });
   },
   openExternal: (url) => ipcRenderer.invoke('desktop:open-external', url),
+  setIdlePopupActive: (options) => ipcRenderer.invoke('desktop:set-idle-popup', options),
+  checkForUpdate: () => ipcRenderer.invoke('desktop:check-for-update'),
+  downloadUpdate: (downloadUrl) => ipcRenderer.invoke('desktop:download-update', downloadUrl),
 });

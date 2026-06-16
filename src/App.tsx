@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getTrackerData, login, postHeartbeat, postUnrelatedDetection, uploadScreenshot, addTask, updateTaskStatus, API_BASE_URL, pingApi } from './api';
+import { getTrackerData, login, postHeartbeat, postUnrelatedDetection, uploadScreenshot, addTask, updateTaskStatus, API_BASE_URL, pingApi, APP_VERSION } from './api';
 import {
   buildUnrelatedReportKey,
   collectTrackerWorkerIds,
@@ -10,14 +10,18 @@ import {
   parseEmployerKeywords,
 } from './detection';
 import type { ActiveWindowInfo, ConnectionStatus, Employer, Project, Task, TrackerData, TrackingSelection } from './types';
+import { checkForAppUpdate, downloadAppUpdate, type UpdateCheckResult } from './updates';
 
 const savedTokenKey = 'va-tracker-auth-token';
 const defaultHeartbeatSeconds = 60;
 const defaultScreenshotSeconds = 600;
 const defaultDetectionSeconds = 10;
 const defaultIdleCheckSeconds = 10;
+const idlePreparationLeadSeconds = 30;
 const startTrackingReminderSeconds = 30;
 const connectionCheckMs = 20000;
+const updateCheckStorageKey = 'va-trackme-last-update-check';
+const updateCheckIntervalMs = 6 * 60 * 60 * 1000;
 
 function formatIdleDuration(totalSeconds: number): string {
   const secondsTotal = Math.max(0, Math.floor(totalSeconds));
@@ -41,6 +45,18 @@ const idleStatusLabels: Record<number, string> = {
   2: 'Breaktime',
   3: 'Away',
 };
+
+function getTrackerAppActiveWindow(): ActiveWindowInfo {
+  return {
+    processId: 0,
+    windowHandle: '',
+    windowTitle: 'VA Trackme',
+    moduleName: 'VA Trackme',
+    moduleFilename: '',
+    memoryUsage: 0,
+    pagedMemorySize: 0,
+  };
+}
 
 function getTaskIdFromAddResponse(res: Record<string, unknown>) {
   const nested = (res.Task ?? res.task) as Record<string, unknown> | undefined;
@@ -264,6 +280,9 @@ function App() {
   const [idleRemark, setIdleRemark] = useState('');
   const [idleSubmitting, setIdleSubmitting] = useState(false);
   const [idleLiveSeconds, setIdleLiveSeconds] = useState(0);
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateDismissedVersion, setUpdateDismissedVersion] = useState('');
   const heartbeatTimer = useRef<number | null>(null);
   const screenshotTimer = useRef<number | null>(null);
   const detectionTimer = useRef<number | null>(null);
@@ -274,6 +293,8 @@ function App() {
   const trackerIdRef = useRef<number | undefined>();
   const wasIdleRef = useRef(false);
   const idleSendInFlightRef = useRef(false);
+  const idlePrepInFlightRef = useRef(false);
+  const idleSessionPreparedRef = useRef(false);
   const idlePopupVisibleRef = useRef(false);
   const activityRef = useRef(activity);
   const [isAppFocused, setIsAppFocused] = useState(true);
@@ -344,6 +365,10 @@ function App() {
       void refreshData(token);
     }
   }, [token]);
+
+  useEffect(() => {
+    void runUpdateCheck({ silent: true });
+  }, []);
 
   // Monitor internet/API connection and auto-reload data when back online
   useEffect(() => {
@@ -853,6 +878,18 @@ function App() {
     };
   }, [idlePopup]);
 
+  useEffect(() => {
+    if (!idlePopup) {
+      void window.desktopApi.setIdlePopupActive?.({ active: false });
+      return;
+    }
+
+    void window.desktopApi.setIdlePopupActive?.({ active: true, focus: true });
+    return () => {
+      void window.desktopApi.setIdlePopupActive?.({ active: false });
+    };
+  }, [idlePopup]);
+
   function remindStartTracking() {
     setShowStartReminder(true);
     reportStatus('Tracking is stopped. Start working to begin time tracking.');
@@ -995,9 +1032,13 @@ function App() {
   ) {
     if (!trackerIdRef.current) return false;
 
+    const activeWindow = getTrackerAppActiveWindow();
     const workingFlush = await sendHeartbeat(currentSelection, 1, {
       idleStatus: 0,
       remark: '',
+      activeWindow,
+      skipUnrelatedDetection: true,
+      silent: true,
     });
     if (workingFlush?.error_va_code) return false;
 
@@ -1007,32 +1048,73 @@ function App() {
       idleStatus: 1,
       idleMinutes,
       remark: '',
+      activeWindow,
+      skipUnrelatedDetection: true,
+      silent: true,
     });
     if (idleSession?.error_va_code) return false;
+    if (!idleSession?.id) return false;
 
     return true;
   }
 
   async function checkIdleAndShowPopup(currentSelection: TrackingSelection) {
-    if (!token || !isTracking || idleSendInFlightRef.current || idlePopupVisibleRef.current) return;
+    if (!token || !isTracking || idlePopupVisibleRef.current) return;
 
-    const { idleStatus, idleMinutes, idleSeconds } = await getIdleStatus();
-    if (idleStatus !== 1) {
+    const idleLimitMinutes = Number(data?.minute_idle_time ?? 0);
+    if (idleLimitMinutes <= 0) return;
+
+    const { idleSeconds } = await getIdleStatus();
+    const popupThresholdSeconds = idleLimitMinutes * 60;
+    const prepThresholdSeconds = Math.max(0, popupThresholdSeconds - idlePreparationLeadSeconds);
+
+    if (idleSeconds < prepThresholdSeconds) {
+      idleSessionPreparedRef.current = false;
       wasIdleRef.current = false;
       return;
     }
-    if (wasIdleRef.current) return;
-    if (!trackerIdRef.current) return;
+
+    if (
+      idleSeconds >= prepThresholdSeconds &&
+      !idleSessionPreparedRef.current &&
+      !idlePrepInFlightRef.current &&
+      !idleSendInFlightRef.current &&
+      trackerIdRef.current
+    ) {
+      idlePrepInFlightRef.current = true;
+      try {
+        const ready = await prepareIdleSessionBeforePopup(
+          currentSelection,
+          idleSeconds / 60,
+        );
+        if (ready) idleSessionPreparedRef.current = true;
+      } finally {
+        idlePrepInFlightRef.current = false;
+      }
+    }
+
+    if (idleSeconds < popupThresholdSeconds) return;
+    if (wasIdleRef.current || idleSendInFlightRef.current) return;
 
     idleSendInFlightRef.current = true;
     try {
-      const ready = await prepareIdleSessionBeforePopup(currentSelection, idleMinutes);
-      if (!ready) return;
+      if (!idleSessionPreparedRef.current) {
+        const ready = await prepareIdleSessionBeforePopup(
+          currentSelection,
+          idleSeconds / 60,
+        );
+        if (!ready) return;
+        idleSessionPreparedRef.current = true;
+      }
 
       idlePopupVisibleRef.current = true;
       setIdleSelectedStatus('0');
       setIdleRemark('');
-      setIdlePopup({ idleMinutes, idleSeconds, openedAt: Date.now() });
+      setIdlePopup({
+        idleMinutes: idleSeconds / 60,
+        idleSeconds,
+        openedAt: Date.now(),
+      });
       setIdleLiveSeconds(idleSeconds);
       reportStatus('Idle detected — please explain why you were idle.');
 
@@ -1053,8 +1135,16 @@ function App() {
     selectedStatus: number,
     remark: string,
     idleMinutes: number,
+    activeWindow: ActiveWindowInfo,
   ) {
+    const heartbeatOptions = {
+      activeWindow,
+      skipUnrelatedDetection: true,
+      silent: true,
+    };
+
     const idleResult = await sendHeartbeat(currentSelection, 1, {
+      ...heartbeatOptions,
       idleStatus: 1,
       idleMinutes,
       remark,
@@ -1063,27 +1153,16 @@ function App() {
 
     if (selectedStatus === 2 || selectedStatus === 3) {
       const statusResult = await sendHeartbeat(currentSelection, 1, {
+        ...heartbeatOptions,
         idleStatus: selectedStatus,
         remark: '',
       });
       if (statusResult?.error_va_code) return false;
-
-      updateTrackerId(undefined);
-      const resumeResult = await sendHeartbeat(currentSelection, 1, {
-        resetTrackerId: true,
-        idleStatus: 0,
-        remark: '',
-      });
-      if (resumeResult?.error_va_code) {
-        wasIdleRef.current = false;
-        return false;
-      }
-
-      return true;
     }
 
     updateTrackerId(undefined);
     const resumeResult = await sendHeartbeat(currentSelection, 1, {
+      ...heartbeatOptions,
       resetTrackerId: true,
       idleStatus: 0,
       remark: '',
@@ -1113,15 +1192,18 @@ function App() {
     setIdleSubmitting(true);
 
     try {
+      const activeWindow = getTrackerAppActiveWindow();
       const ok = await submitIdleWithReset(
         currentSelection,
         selectedStatus,
         remark,
         idleLiveSeconds / 60,
+        activeWindow,
       );
       if (!ok) return;
 
       wasIdleRef.current = true;
+      idleSessionPreparedRef.current = false;
       idlePopupVisibleRef.current = false;
       setIdlePopup(null);
       reportStatus(
@@ -1166,6 +1248,9 @@ function App() {
       idleMinutes?: number;
       idleStatus?: number;
       remark?: string;
+      activeWindow?: ActiveWindowInfo;
+      skipUnrelatedDetection?: boolean;
+      silent?: boolean;
     },
   ) {
     let idleStatus: number;
@@ -1182,10 +1267,10 @@ function App() {
       idleMinutes = idle.idleMinutes;
     }
 
-    const activeWindow = await window.desktopApi.getActiveWindow();
+    const activeWindow = options?.activeWindow ?? await window.desktopApi.getActiveWindow();
     setDebugActiveWindow({ title: activeWindow?.windowTitle || '', module: activeWindow?.moduleName || '' });
     setLastActiveTitle(activeWindow?.windowTitle || '');
-    const unrelatedMatches = isUnrelatedDetectionExemptRef.current
+    const unrelatedMatches = options?.skipUnrelatedDetection || isUnrelatedDetectionExemptRef.current
       ? []
       : detectUnrelatedKeywords(activeWindow, employerKeywords);
 
@@ -1235,7 +1320,9 @@ function App() {
     });
     setActivity({ keystroke: 0, mouseclick: 0, mousemove: 0 });
     activityRef.current = { keystroke: 0, mouseclick: 0, mousemove: 0 };
-    reportStatus(`Last synced ${new Date().toLocaleTimeString()}`);
+    if (!options?.silent) {
+      reportStatus(`Last synced ${new Date().toLocaleTimeString()}`);
+    }
 
     if (timeInOut === 1) {
       void syncTrackerDataSilently();
@@ -1337,7 +1424,10 @@ function App() {
     lastSentUnrelatedRef.current = '';
     wasIdleRef.current = false;
     idleSendInFlightRef.current = false;
+    idlePrepInFlightRef.current = false;
+    idleSessionPreparedRef.current = false;
     idlePopupVisibleRef.current = false;
+    void window.desktopApi.setIdlePopupActive?.({ active: false });
     setIdlePopup(null);
   }
 
@@ -1364,23 +1454,109 @@ function App() {
     }
   }
 
+  async function runUpdateCheck(options?: { force?: boolean; silent?: boolean }) {
+    if (updateChecking) return;
+
+    if (!options?.force) {
+      const lastCheck = Number(localStorage.getItem(updateCheckStorageKey) || 0);
+      if (Date.now() - lastCheck < updateCheckIntervalMs) return;
+    }
+
+    setUpdateChecking(true);
+    try {
+      const result = await checkForAppUpdate();
+      setUpdateInfo(result);
+      localStorage.setItem(updateCheckStorageKey, String(Date.now()));
+
+      if (!result.ok) {
+        if (options?.force) {
+          reportStatus(result.error ?? 'Unable to check for updates.', 'error');
+        }
+        return;
+      }
+
+      if (options?.force && !result.updateAvailable) {
+        reportStatus(`You are on the latest version (v${result.currentVersion}).`, 'success');
+        return;
+      }
+
+      if (result.updateAvailable && !options?.silent) {
+        reportStatus(`Update available: v${result.latestVersion}`, 'info');
+      }
+    } finally {
+      setUpdateChecking(false);
+    }
+  }
+
+  async function handleDownloadUpdate() {
+    if (!updateInfo?.downloadUrl) {
+      reportStatus('Update download link is unavailable.', 'error');
+      return;
+    }
+
+    const result = await downloadAppUpdate(updateInfo.downloadUrl);
+    if (!result.ok) {
+      reportStatus(result.error ?? 'Unable to open update download.', 'error');
+      return;
+    }
+
+    reportStatus('Opening update download...', 'success');
+  }
+
   return (
     <main className={`app-shell compact${token ? '' : ' login-view'}`}>
       <section className="hero">
         <div>
           <p className="eyebrow">VA Trackme</p>
           <h1>Track task time from your desktop.</h1>
+          <p className="muted app-version">Version {APP_VERSION}</p>
           <p className={`muted connection-status ${connectionStatus}`}>
             <span className={`status-dot ${connectionStatus}`} />
             {connectionStatus === 'connected' ? 'Connected' : connectionStatus === 'checking' ? 'Checking connection...' : 'Offline — retrying automatically'}
           </p>
         </div>
-        {token && (
-          <button className="secondary" type="button" onClick={signOut}>
-            Sign out
+        <div className="hero-actions">
+          <button
+            className="secondary"
+            type="button"
+            disabled={updateChecking}
+            onClick={() => void runUpdateCheck({ force: true })}
+          >
+            {updateChecking ? 'Checking updates...' : 'Check for updates'}
           </button>
-        )}
+          {token && (
+            <button className="secondary" type="button" onClick={signOut}>
+              Sign out
+            </button>
+          )}
+        </div>
       </section>
+
+      {updateInfo?.updateAvailable && updateInfo.latestVersion !== updateDismissedVersion && (
+        <section className="update-banner card" role="status" aria-live="polite">
+          <div className="update-banner-copy">
+            <strong>Update available</strong>
+            <p className="muted">
+              VA Trackme v{updateInfo.latestVersion} is ready. You are on v{updateInfo.currentVersion}.
+            </p>
+            {updateInfo.releaseNotes ? (
+              <p className="update-notes">{updateInfo.releaseNotes}</p>
+            ) : null}
+          </div>
+          <div className="update-banner-actions">
+            <button type="button" onClick={() => void handleDownloadUpdate()}>
+              Download update
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setUpdateDismissedVersion(updateInfo.latestVersion || '')}
+            >
+              Later
+            </button>
+          </div>
+        </section>
+      )}
 
       {showUnrelatedBanner && (
         <div style={{ position: 'fixed', top: 12, right: 12, zIndex: 9999 }}>

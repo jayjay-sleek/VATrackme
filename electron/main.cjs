@@ -3,6 +3,8 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const { getWindowIconPath, getTrayIconImage } = require('./icons.cjs');
+const { checkForUpdate } = require('./updates.cjs');
+const packageJson = require('../package.json');
 
 // Prevent GPU/renderer issues on some Windows machines and ensure cache/userData is writable.
 try {
@@ -177,6 +179,40 @@ if (gotTheLock) app.whenReady().then(() => {
     } catch (e) {
       try { console.error('open-external error', e); } catch (_) {}
       return { ok: false, error: String(e) };
+    }
+  });
+
+  ipcMain.handle('desktop:set-idle-popup', async (_event, options = {}) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const active = Boolean(options.active);
+    if (active) {
+      if (process.platform === 'darwin') {
+        try { app.dock.show(); } catch (_) {}
+      }
+      const level = process.platform === 'darwin' ? 'floating' : 'screen-saver';
+      mainWindow.setAlwaysOnTop(true, level);
+      if (options.focus !== false) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+      return;
+    }
+    mainWindow.setAlwaysOnTop(false);
+  });
+
+  ipcMain.handle('desktop:check-for-update', async () => {
+    return checkForUpdate(packageJson.version);
+  });
+
+  ipcMain.handle('desktop:download-update', async (_event, downloadUrl) => {
+    try {
+      const { shell } = require('electron');
+      if (!downloadUrl) return { ok: false, error: 'Missing download URL.' };
+      await shell.openExternal(String(downloadUrl));
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: String(error) };
     }
   });
 

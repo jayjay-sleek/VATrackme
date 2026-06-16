@@ -1,4 +1,7 @@
 import type { ActiveWindowInfo, LoginResponse, ScreenCapture, TrackerData, TrackingSelection } from './types';
+import packageJson from '../package.json';
+
+export const APP_VERSION = packageJson.version;
 
 export const API_BASE_URL = 'https://www.va4hire.ph/app/api/';
 
@@ -89,6 +92,7 @@ export async function postHeartbeat(input: HeartbeatInput) {
       'Timetracker[u_long]': '0',
       'Timetracker[idle_status]': input.idleStatus,
       'Timetracker[remark]': input.remark,
+      'Timetracker[version]': APP_VERSION,
       'Process[process_id]': input.activeWindow.processId,
       'Process[window_handle]': input.activeWindow.windowHandle,
       'Process[window_title]': input.activeWindow.windowTitle,

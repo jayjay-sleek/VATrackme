@@ -94,6 +94,17 @@ declare global {
       onGlobalInput: (cb: (payload: { type: string }) => void) => void;
       openExternal?: (url: string) => Promise<any>;
       pingApi?: () => Promise<{ ok: boolean; status?: number; error?: string }>;
+      setIdlePopupActive?: (options: { active: boolean; focus?: boolean }) => Promise<void>;
+      checkForUpdate?: () => Promise<{
+        ok: boolean;
+        currentVersion: string;
+        latestVersion?: string;
+        downloadUrl?: string;
+        releaseNotes?: string;
+        updateAvailable?: boolean;
+        error?: string;
+      }>;
+      downloadUpdate?: (downloadUrl: string) => Promise<{ ok: boolean; error?: string }>;
     };
   }
 }

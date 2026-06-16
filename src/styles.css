@@ -84,6 +84,50 @@ label {
   margin-bottom: 12px;
 }
 
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.app-version {
+  margin: 4px 0 0;
+}
+
+.update-banner {
+  align-items: center;
+  background: #eef4ff;
+  border: 1px solid #c7d7fe;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  padding: 12px;
+}
+
+.update-banner-copy {
+  min-width: 0;
+}
+
+.update-banner-copy p {
+  margin: 4px 0 0;
+}
+
+.update-notes {
+  color: #344054;
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.update-banner-actions {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .hero h1 {
   font-size: 16px;
   line-height: 1.1;
