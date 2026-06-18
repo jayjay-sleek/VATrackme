@@ -30,7 +30,7 @@ function formatIdleDuration(totalSeconds: number): string {
   const seconds = secondsTotal % 60;
 
   if (hours > 0) {
-    const minutePart = minutes > 0 ? `    and ${minutes} minute${minutes === 1 ? '' : 's'}` : '';
+    const minutePart = minutes > 0 ? `  ...  and ${minutes} minute${minutes === 1 ? '' : 's'}` : '';
     return `${hours} hour${hours === 1 ? '' : 's'}${minutePart}`;
   }
   if (minutes > 0) {
