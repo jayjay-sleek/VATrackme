@@ -987,6 +987,8 @@ function App() {
         keystroke: activity.keystroke,
         mouseclick: activity.mouseclick,
         mousemove: activity.mousemove,
+        is_unrelated: 1,
+        remark: formatUnrelatedRemark(unrelatedMatches),
       });
       setLastCaptureAt(Date.now());
       try {

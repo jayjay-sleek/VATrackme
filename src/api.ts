@@ -135,6 +135,8 @@ export async function uploadScreenshot(params: {
   keystroke: number;
   mouseclick: number;
   mousemove: number;
+  is_unrelated?: 0 | 1;
+  remark?: string;
 }) {
   return window.desktopApi.apiRequest({
     method: 'POST',
@@ -146,6 +148,8 @@ export async function uploadScreenshot(params: {
       keystroke: params.keystroke,
       mouseclick: params.mouseclick,
       mousemove: params.mousemove,
+      is_unrelated: params.is_unrelated ?? 0,
+      remark: params.remark ?? '',
     },
     bodyType: 'multipart',
     file: params.capture,
