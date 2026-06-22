@@ -293,6 +293,11 @@ label {
   margin-top: 4px;
 }
 
+.metric.hours-today strong {
+  font-size: 28px;
+  line-height: 1.1;
+}
+
 .tracker-card,
 .activity-card {
   display: grid;
@@ -417,6 +422,10 @@ dd {
 
 .app-shell.compact .metric strong {
   font-size: 14px;
+}
+
+.app-shell.compact .metric.hours-today strong {
+  font-size: 24px;
 }
 
 .app-shell.compact .field-grid {
@@ -576,6 +585,7 @@ dd {
 .idle-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   margin-top: 12px;
 }
 

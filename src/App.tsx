@@ -30,7 +30,7 @@ function formatIdleDuration(totalSeconds: number): string {
   const seconds = secondsTotal % 60;
 
   if (hours > 0) {
-    const minutePart = minutes > 0 ? `  ...  and ${minutes} minute${minutes === 1 ? '' : 's'}` : '';
+    const minutePart = minutes > 0 ? `  and ${minutes} minute${minutes === 1 ? '' : 's'}` : '';
     return `${hours} hour${hours === 1 ? '' : 's'}${minutePart}`;
   }
   if (minutes > 0) {
@@ -296,6 +296,9 @@ function App() {
   const idlePrepInFlightRef = useRef(false);
   const idleSessionPreparedRef = useRef(false);
   const idlePopupVisibleRef = useRef(false);
+  const trackerIdleStatusRef = useRef(0);
+  const idleResumeInFlightRef = useRef(false);
+  const resumeFromIdleRef = useRef<() => Promise<void>>(async () => {});
   const activityRef = useRef(activity);
   const [isAppFocused, setIsAppFocused] = useState(true);
   const fallbackTimer = useRef<number | null>(null);
@@ -435,9 +438,21 @@ function App() {
   }, [activity]);
 
   useEffect(() => {
-    const onKey = () => setActivity((current) => ({ ...current, keystroke: current.keystroke + 1 }));
-    const onClick = () => setActivity((current) => ({ ...current, mouseclick: current.mouseclick + 1 }));
-    const onMove = () => setActivity((current) => ({ ...current, mousemove: current.mousemove + 1 }));
+    const onUserActivity = () => {
+      void resumeFromIdleRef.current();
+    };
+    const onKey = () => {
+      setActivity((current) => ({ ...current, keystroke: current.keystroke + 1 }));
+      onUserActivity();
+    };
+    const onClick = () => {
+      setActivity((current) => ({ ...current, mouseclick: current.mouseclick + 1 }));
+      onUserActivity();
+    };
+    const onMove = () => {
+      setActivity((current) => ({ ...current, mousemove: current.mousemove + 1 }));
+      onUserActivity();
+    };
 
     window.addEventListener('keydown', onKey);
     window.addEventListener('mousedown', onClick);
@@ -468,6 +483,9 @@ function App() {
         } else if (payload.type === 'mousemove') {
           setActivity((current) => ({ ...current, mousemove: current.mousemove + 1 }));
         }
+        if (payload.type === 'keydown' || payload.type === 'mouseclick' || payload.type === 'mousemove') {
+          void resumeFromIdleRef.current();
+        }
       });
     } catch (e) {
       // ignore if not available
@@ -492,6 +510,7 @@ function App() {
               activityRef.current = next;
               return next;
             });
+            void resumeFromIdleRef.current();
           }
         } catch (e) {
           try { window.desktopApi.log({ level: 'error', message: 'fallback poll error ' + String(e) }); } catch (_) {}
@@ -1057,8 +1076,48 @@ function App() {
     if (idleSession?.error_va_code) return false;
     if (!idleSession?.id) return false;
 
+    trackerIdleStatusRef.current = 1;
     return true;
   }
+
+  function closeIdlePopup() {
+    idlePopupVisibleRef.current = false;
+    setIdlePopup(null);
+    void window.desktopApi.setIdlePopupActive?.({ active: false });
+  }
+
+  async function resumeWorkingFromIdleActivity() {
+    if (trackerIdleStatusRef.current !== 1) return;
+    if (idlePopupVisibleRef.current) return;
+    if (!token || !isTracking || idleResumeInFlightRef.current || idleSendInFlightRef.current) return;
+
+    const currentSelection = trackingSelectionRef.current;
+    if (!currentSelection) return;
+
+    idleResumeInFlightRef.current = true;
+    try {
+      const activeWindow = getTrackerAppActiveWindow();
+      updateTrackerId(undefined);
+      const result = await sendHeartbeat(currentSelection, 1, {
+        resetTrackerId: true,
+        idleStatus: 0,
+        remark: '',
+        activeWindow,
+        skipUnrelatedDetection: true,
+        silent: true,
+      });
+      if (result?.error_va_code) return;
+
+      trackerIdleStatusRef.current = 0;
+      idleSessionPreparedRef.current = false;
+      wasIdleRef.current = false;
+      reportStatus('Working resumed after activity detected.', 'success');
+    } finally {
+      idleResumeInFlightRef.current = false;
+    }
+  }
+
+  resumeFromIdleRef.current = resumeWorkingFromIdleActivity;
 
   async function checkIdleAndShowPopup(currentSelection: TrackingSelection) {
     if (!token || !isTracking || idlePopupVisibleRef.current) return;
@@ -1071,6 +1130,12 @@ function App() {
     const prepThresholdSeconds = Math.max(0, popupThresholdSeconds - idlePreparationLeadSeconds);
 
     if (idleSeconds < prepThresholdSeconds) {
+      if (idlePopupVisibleRef.current) {
+        closeIdlePopup();
+      }
+      if (trackerIdleStatusRef.current === 1 && !idlePopupVisibleRef.current) {
+        await resumeWorkingFromIdleActivity();
+      }
       idleSessionPreparedRef.current = false;
       wasIdleRef.current = false;
       return;
@@ -1204,6 +1269,7 @@ function App() {
       );
       if (!ok) return;
 
+      trackerIdleStatusRef.current = 0;
       wasIdleRef.current = true;
       idleSessionPreparedRef.current = false;
       idlePopupVisibleRef.current = false;
@@ -1429,6 +1495,8 @@ function App() {
     idlePrepInFlightRef.current = false;
     idleSessionPreparedRef.current = false;
     idlePopupVisibleRef.current = false;
+    trackerIdleStatusRef.current = 0;
+    idleResumeInFlightRef.current = false;
     void window.desktopApi.setIdlePopupActive?.({ active: false });
     setIdlePopup(null);
   }
@@ -1510,7 +1578,6 @@ function App() {
       <section className="hero">
         <div>
           <p className="eyebrow">VA Trackme</p>
-          <h1>Track task time from your desktop.</h1>
           <p className="muted app-version">Version {APP_VERSION}</p>
           <p className={`muted connection-status ${connectionStatus}`}>
             <span className={`status-dot ${connectionStatus}`} />
@@ -1518,6 +1585,11 @@ function App() {
           </p>
         </div>
         <div className="hero-actions">
+          {token && (
+            <button className="secondary" type="button" onClick={openDashboard}>
+              Open Dashboard
+            </button>
+          )}
           <button
             className="secondary"
             type="button"
@@ -1607,12 +1679,9 @@ function App() {
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <div className="metric" style={{ minWidth: 72 }}>
+              <div className="metric hours-today">
                 <span>Today</span>
                 <strong>{data?.hours_work_today ?? '0:00'}</strong>
-              </div>
-              <div>
-                <button className="secondary" onClick={openDashboard} style={{ padding: '6px 8px' }}>Open Dashboard</button>
               </div>
             </div>
           </div>
@@ -1740,6 +1809,9 @@ function App() {
             <div className="idle-actions">
               <button type="button" disabled={idleSubmitting || !idleRemark.trim()} onClick={() => void handleIdleGo()}>
                 {idleSubmitting ? 'Sending...' : 'Go'}
+              </button>
+              <button type="button" className="secondary" disabled={idleSubmitting} onClick={closeIdlePopup}>
+                Close
               </button>
             </div>
           </div>
